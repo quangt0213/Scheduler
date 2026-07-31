@@ -365,6 +365,7 @@ const DEFAULT_CONFIG = {
   mealBreakRules: {
     minShiftDuration: 6.0,
     breakDuration: 30,
+    maxHoursBeforeBreak: 5, // break must be taken before 5th hour worked
     blackoutHours: [
       {start:"12:00", end:"14:00", reason:"Lunch rush"},
       {start:"17:00", end:"20:00", reason:"Dinner rush"}
@@ -436,6 +437,9 @@ function validBreakWindows(shift, cfg){
   const S = toMin(shift.start), E = toMin(shift.end);
   const bos = blackoutsMin(cfg);
   const wins = [];
+  const deadline = S + (cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
+  for(let t = Math.ceil(S/30) * 30; t + bd <= E; t+=30){
+    if(t + bd > deadline) break; //too late
   // break starts snap to the clock: :00 or :30 only (e.g. 4:00, 4:30 — never 3:45)
   for(let t=Math.ceil(S/30)*30; t+bd<=E; t+=30){
     const clash = bos.some(b => t < b.e && t+bd > b.s);
