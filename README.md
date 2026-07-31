@@ -2,15 +2,6 @@
 
 A single-file web app for restaurant shift scheduling, meal break compliance, and sales-driven labor forecasting. No build step, no server — just `index.html`.
 
-## Put it live on GitHub Pages (~2 minutes)
-
-1. Go to [github.com/new](https://github.com/new), name the repo (e.g. `panda-schedule`), keep it **Public**, click **Create repository**.
-2. On the new repo page, click **uploading an existing file**, drag in `index.html` and `README.md`, click **Commit changes**.
-3. Go to **Settings → Pages** (left sidebar). Under **Branch**, select `main` and `/ (root)`, click **Save**.
-4. Wait ~1 minute. Your site is live at `https://<your-username>.github.io/panda-schedule/`
-
-To update later, just re-upload a new `index.html` (or edit it directly on GitHub with the pencil icon).
-
 ## Features
 
 - **Schedule tab** — coverage heat map in 30-minute slots from 7 AM to close+buffer, colored by staffing vs. sales demand for that slot (red = 2+ short, yellow = 1 short, green = meets demand, blue = over-staffed; hover any cell to see staff/demand). Staffing summary cards, editable employee schedule table. Click any shift to edit; "+ Add shift" for new ones.
