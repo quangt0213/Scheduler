@@ -365,7 +365,7 @@ const DEFAULT_CONFIG = {
   mealBreakRules: {
     minShiftDuration: 6.0,
     breakDuration: 30,
-    maxHoursBeforeBreak: 5, // break must be taken before 5th hour worked
+    maxHoursBeforeBreak: 5,   // break must be completed before this many hours worked (CA 5th-hour rule)
     blackoutHours: [
       {start:"12:00", end:"14:00", reason:"Lunch rush"},
       {start:"17:00", end:"20:00", reason:"Dinner rush"}
@@ -436,12 +436,12 @@ function validBreakWindows(shift, cfg){
   const bd = cfg.mealBreakRules.breakDuration;
   const S = toMin(shift.start), E = toMin(shift.end);
   const bos = blackoutsMin(cfg);
-  const wins = [];
+  // 5th-hour rule: the 30-min break must be completed before this many hours of work
   const deadline = S + (cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
-  for(let t = Math.ceil(S/30) * 30; t + bd <= E; t+=30){
-    if(t + bd > deadline) break; //too late
+  const wins = [];
   // break starts snap to the clock: :00 or :30 only (e.g. 4:00, 4:30 — never 3:45)
   for(let t=Math.ceil(S/30)*30; t+bd<=E; t+=30){
+    if(t+bd > deadline) break;             // too late — past the 5th hour of work
     const clash = bos.some(b => t < b.e && t+bd > b.s);
     if(clash) continue;
     const mid = t > S+60 && t+bd < E-60;   // prefer not first/last hour
@@ -566,7 +566,7 @@ function loadSample(){
 }
 
 /* ---------- persistence ---------- */
-const LS_KEY="panda2355_v2";
+const LS_KEY="panda2355_v3";
 function persist(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify({config:state.config, shifts:state.shifts, sales:state.sales, nextId:state.nextId, weekLabel:state.weekLabel})); }catch(e){}
 }
@@ -847,7 +847,7 @@ App.conflictLists = function(){
   for(const s of state.shifts){
     const st=shiftStatus(s,cfg);
     const d=durH(s);
-    if(st.level==="crit" && !s.ack) crit.push({s,msg:st.code==="no_valid_break_window"?"No valid break window — blackouts cover the whole shift. ACTION: extend/split shift or override.":"Assigned break is now inside a blackout. ACTION: re-assign."});
+    if(st.level==="crit" && !s.ack) crit.push({s,msg:st.code==="no_valid_break_window"?"No valid break window — blackouts + "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th-hour rule leave no slot. ACTION: adjust shift start, split shift, or override.":"Assigned break violates current rules ("+st.label+"). ACTION: re-assign."});
     else if(st.level==="warn") warn.push({s,msg:st.code==="single_window"?"Only one narrow break window available — verify acceptable.":"Break required but not yet assigned."});
     else if(!requiresBreak(s,cfg) && d>cfg.mealBreakRules.minShiftDuration-0.5) warn.push({s,msg:"Shift "+d.toFixed(1)+"h — close to "+cfg.mealBreakRules.minShiftDuration+"h threshold. Overtime would require a meal break."});
     else ok.push(s);
@@ -1104,7 +1104,8 @@ App.renderSettings = function(){
   </div>
   <div class="panel"><h3>3 · Meal break rules</h3>
     <label class="fld">Min shift duration for meal break (hrs) <input id="mbMin" type="number" step="0.5" value="${c.mealBreakRules.minShiftDuration}"></label><br>
-    <label class="fld">Break duration (min) <input id="mbDur" type="number" value="${c.mealBreakRules.breakDuration}"></label>
+    <label class="fld">Break duration (min) <input id="mbDur" type="number" value="${c.mealBreakRules.breakDuration}"></label><br>
+    <label class="fld">Break must be completed before hour of work (5th-hour rule) <input id="mbMax" type="number" step="0.5" value="${c.mealBreakRules.maxHoursBeforeBreak||5}"></label>
     <h3 style="margin-top:10px">Blackout hours (no breaks)</h3>
     <div id="blackoutList">${bo.map((b,i)=>`<div class="row" style="margin-bottom:6px"><input style="width:75px" id="bo_${i}_s" value="${b.start}"><span>→</span><input style="width:75px" id="bo_${i}_e" value="${b.end}"><input style="width:130px" id="bo_${i}_r" value="${b.reason}"><button class="btn small secondary" onclick="App.removeBlackout(${i})">✕</button></div>`).join("")}</div>
     <button class="btn small secondary" onclick="App.addBlackout()">+ Add blackout</button>
@@ -1135,6 +1136,7 @@ App.collectSettings=function(){
   for(const d of DAYS){ c.storeHours[d]={open:v("oh_"+d+"_o"),close:v("oh_"+d+"_c")};
     const n=+v("sd_"+d+"_n"); if(n>0) c.specialDays[d]={extraEarlyStarters:n,reason:v("sd_"+d+"_r")||"Special"}; else delete c.specialDays[d]; }
   c.mealBreakRules.minShiftDuration=+v("mbMin"); c.mealBreakRules.breakDuration=+v("mbDur");
+  c.mealBreakRules.maxHoursBeforeBreak=+v("mbMax")||5;
   c.mealBreakRules.blackoutHours=c.mealBreakRules.blackoutHours.map((b,i)=>({start:v("bo_"+i+"_s")||b.start,end:v("bo_"+i+"_e")||b.end,reason:v("bo_"+i+"_r")||b.reason}));
   c.busynessMultipliers={day:+v("bmDay"),night:+v("bmNight")};
   c.payroll.averageHourlyWage=+v("pyWage");
