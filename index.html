@@ -476,8 +476,11 @@ function shiftStatus(shift, cfg){
   if(!wins.length) return {code:"no_valid_break_window", label:"No valid break window", level:"crit"};
   if(shift.breakStart!=null){
     const bs=toMin(shift.breakStart), bd=cfg.mealBreakRules.breakDuration;
-    const stillValid = !blackoutsMin(cfg).some(b=> bs < b.e && bs+bd > b.s) && bs>=toMin(shift.start) && bs+bd<=toMin(shift.end);
-    if(stillValid) return {code:"scheduled", label:"Break "+fmt12r(bs,bs+bd), level:"ok"};
+    const deadline=toMin(shift.start)+(cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
+    const inBlackout = blackoutsMin(cfg).some(b=> bs < b.e && bs+bd > b.s);
+    const inShift = bs>=toMin(shift.start) && bs+bd<=toMin(shift.end);
+    if(bs+bd > deadline) return {code:"invalid_assignment", label:"Break past the "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th hour of work", level:"crit"};
+    if(!inBlackout && inShift) return {code:"scheduled", label:"Break "+fmt12r(bs,bs+bd), level:"ok"};
     return {code:"invalid_assignment", label:"Assigned break now invalid", level:"crit"};
   }
   const distinctBlocks = new Set(wins.map(w=>Math.floor(w.s/60))).size;
