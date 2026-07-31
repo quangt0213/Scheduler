@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panda #2355 — Schedule & Labor Forecast</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{
+  --bg:#0f1115; --panel:#181b22; --panel2:#1f242e; --border:#2a3140;
+  --text:#e8eaf0; --muted:#8b93a5; --accent:#d62b2b; --accent2:#ff6b4a;
+  --green:#3ecf8e; --yellow:#f5c451; --red:#ff5a5a; --blue:#5aa7ff;
+  --radius:10px; --mono:'SF Mono',Consolas,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.5}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;position:sticky;top:0;z-index:50}
+header h1{font-size:17px;font-weight:700}
+header h1 span{color:var(--accent2)}
+.week-label{color:var(--muted);font-size:13px}
+nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+nav button{background:transparent;border:1px solid transparent;color:var(--muted);padding:7px 13px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+nav button:hover{color:var(--text);background:var(--panel2)}
+nav button.active{color:#fff;background:var(--accent);border-color:var(--accent)}
+main{padding:20px 24px;max-width:1350px;margin:0 auto}
+.tab{display:none}
+.tab.active{display:block}
+h2{font-size:16px;margin-bottom:12px}
+h3{font-size:14px;margin-bottom:8px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px}
+.grid{display:grid;gap:14px}
+.grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.grid.c4{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.card{background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.card .big{font-size:22px;font-weight:700;margin:4px 0}
+.card .sub{color:var(--muted);font-size:12px}
+.card h4{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:7px 9px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;position:sticky;top:0;background:var(--panel)}
+.scroll-x{overflow-x:auto}
+.heat td{text-align:center;font-family:var(--mono);font-size:12px;cursor:default}
+.cell-g{background:rgba(62,207,142,.16);color:var(--green)}
+.cell-y{background:rgba(245,196,81,.14);color:var(--yellow)}
+.cell-r{background:rgba(255,90,90,.16);color:var(--red)}
+.cell-off{color:#3a4152}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+.b-ok{background:rgba(62,207,142,.15);color:var(--green)}
+.b-warn{background:rgba(245,196,81,.15);color:var(--yellow)}
+.b-crit{background:rgba(255,90,90,.15);color:var(--red)}
+.b-info{background:rgba(90,167,255,.15);color:var(--blue)}
+.b-muted{background:var(--panel2);color:var(--muted)}
+button.btn{background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px}
+button.btn:hover{filter:brightness(1.12)}
+button.btn.secondary{background:var(--panel2);border:1px solid var(--border);color:var(--text)}
+button.btn.small{padding:5px 10px;font-size:12px}
+button.btn:disabled{opacity:.45;cursor:not-allowed}
+input,select{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:8px;font-size:13px}
+input:focus,select:focus{outline:none;border-color:var(--accent2)}
+label.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row.between{justify-content:space-between}
+.muted{color:var(--muted)}
+.mono{font-family:var(--mono)}
+.shift-cell{cursor:pointer;border-radius:6px;padding:5px 7px}
+.shift-cell:hover{background:var(--panel2)}
+.shift-cell .brk{font-size:11px;color:var(--green)}
+.shift-cell .brk.warn{color:var(--yellow)}
+.shift-cell .brk.crit{color:var(--red)}
+.timeline{position:relative;height:44px;background:var(--panel2);border-radius:8px;margin:10px 0;overflow:hidden}
+.tl-seg{position:absolute;top:0;height:100%}
+.tl-shift{background:rgba(90,167,255,.25);border:1px solid var(--blue)}
+.tl-blackout{background:rgba(255,90,90,.25)}
+.tl-break{background:var(--green);opacity:.9}
+.tl-label{position:absolute;bottom:2px;font-size:9px;color:var(--muted)}
+.win-btn{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-family:var(--mono)}
+.win-btn:hover{border-color:var(--green)}
+.win-btn.selected{background:rgba(62,207,142,.2);border-color:var(--green);color:var(--green)}
+.win-btn.suggested::after{content:" ★";color:var(--yellow)}
+.alert-item{display:flex;gap:10px;padding:10px;border-radius:8px;margin-bottom:8px;background:var(--panel2);border-left:3px solid var(--muted)}
+.alert-item.crit{border-left-color:var(--red)}
+.alert-item.warn{border-left-color:var(--yellow)}
+.alert-item.info{border-left-color:var(--blue)}
+.alert-item.ok{border-left-color:var(--green)}
+.drop{border:2px dashed var(--border);border-radius:var(--radius);padding:26px;text-align:center;color:var(--muted);cursor:pointer}
+.drop:hover,.drop.over{border-color:var(--accent2);color:var(--text)}
+.chart-box{position:relative;height:260px}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:100}
+.modal-bg.open{display:flex}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;width:min(560px,92vw);max-height:88vh;overflow-y:auto}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.tag{font-size:11px;color:var(--muted)}
+.risk-CRITICAL{color:var(--red);font-weight:700}
+.risk-UNDER{color:var(--yellow);font-weight:600}
+.risk-OK{color:var(--green)}
+.risk-OVER{color:var(--blue)}
+hr{border:none;border-top:1px solid var(--border);margin:14px 0}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--green);padding:12px 18px;border-radius:10px;z-index:200;display:none;max-width:360px}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap;margin-top:8px}
+.legend .sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+@media print{
+  body{background:#fff;color:#000}
+  header nav,header .actions,.no-print{display:none!important}
+  .panel,.card{border-color:#ccc;background:#fff}
+  .tab{display:none}.tab.print-me{display:block}
+  th{background:#fff;color:#333}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>🐼 Panda <span>#2355</span> — Schedule & Labor</h1>
+  <span class="week-label" id="weekLabel"></span>
+  <nav id="nav">
+    <button data-tab="schedule" class="active">Schedule</button>
+    <button data-tab="breaks">Meal Breaks</button>
+    <button data-tab="sales">Sales & Forecast</button>
+    <button data-tab="coverage">Coverage</button>
+    <button data-tab="compare">A/B Compare</button>
+    <button data-tab="io">Import / Export</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+<main>
+
+<!-- ============ SCHEDULE TAB ============ -->
+<section class="tab active" id="tab-schedule">
+  <div class="grid c4" id="summaryCards"></div>
+  <div class="panel" style="margin-top:16px">
+    <div class="row between">
+      <h2>Hourly Coverage Heat Map</h2>
+      <div class="legend">
+        <span><span class="sw" style="background:rgba(62,207,142,.5)"></span>5+ flexible</span>
+        <span><span class="sw" style="background:rgba(245,196,81,.5)"></span>3–4 on-target</span>
+        <span><span class="sw" style="background:rgba(255,90,90,.5)"></span>&lt;3 risk zone</span>
+      </div>
+    </div>
+    <div class="scroll-x"><table class="heat" id="heatMap"></table></div>
+  </div>
+  <div class="panel">
+    <div class="row between">
+      <h2>Employee Schedule <span class="tag">(click a shift to edit / assign break)</span></h2>
+      <div class="row no-print">
+        <button class="btn small secondary" onclick="App.autoAssignAll()">Auto-assign all breaks</button>
+        <button class="btn small secondary" onclick="App.openShiftModal(null)">+ Add shift</button>
+        <button class="btn small" onclick="App.printSchedule()">Print / PDF</button>
+      </div>
+    </div>
+    <div class="scroll-x"><table id="empTable"></table></div>
+    <div class="legend">
+      <span>🍽 meal break assigned</span><span>⚠️ needs attention</span><span>🔴 no valid window</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BREAKS TAB ============ -->
+<section class="tab" id="tab-breaks">
+  <div class="grid c2">
+    <div class="panel">
+      <h2>Break Assignment Panel</h2>
+      <label class="fld">Select a shift
+        <select id="breakShiftSelect" onchange="App.renderBreakPanel()"></select>
+      </label>
+      <div id="breakPanel" style="margin-top:14px"></div>
+    </div>
+    <div class="panel">
+      <h2>Conflict Report</h2>
+      <div id="conflictReport"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SALES TAB ============ -->
+<section class="tab" id="tab-sales">
+  <div class="grid c4" id="salesCards"></div>
+  <div class="grid c2" style="margin-top:16px">
+    <div class="panel"><h2>Daily Revenue — Baseline Week</h2><div class="chart-box"><canvas id="dailyChart"></canvas></div></div>
+    <div class="panel"><h2>Hourly Sales Distribution</h2><div class="chart-box"><canvas id="hourlyChart"></canvas></div></div>
+  </div>
+  <div class="panel">
+    <h2>Forecast Scenario Builder</h2>
+    <div class="row">
+      <label class="fld">Mode
+        <select id="fcMode">
+          <option value="growth">Revenue growth %</option>
+          <option value="absolute">Absolute weekly revenue $</option>
+        </select>
+      </label>
+      <label class="fld">Value <input id="fcValue" type="number" value="15" step="1" style="width:110px"></label>
+      <label class="fld">Special adjustment (optional)
+        <select id="fcAdjust">
+          <option value="1">None</option>
+          <option value="1.2">Holiday boost +20%</option>
+          <option value="0.9">Slow season −10%</option>
+        </select>
+      </label>
+      <button class="btn" style="align-self:flex-end" onclick="App.runForecast()">Generate Forecast</button>
+    </div>
+    <p class="muted" style="margin-top:8px">Uses historical hourly pattern · busyness multipliers (day <span id="multDayLbl"></span>× / night <span id="multNightLbl"></span>×) · Wed/Sat delivery surge from settings.</p>
+  </div>
+  <div class="panel" id="forecastPanel" style="display:none">
+    <h2 id="forecastTitle"></h2>
+    <div class="scroll-x"><table id="forecastTable"></table></div>
+    <div id="forecastSummary" style="margin-top:12px"></div>
+  </div>
+</section>
+
+<!-- ============ COVERAGE TAB ============ -->
+<section class="tab" id="tab-coverage">
+  <div class="panel">
+    <h2>Hour-by-Hour Staffing Analysis</h2>
+    <div id="coverageBlocks"></div>
+  </div>
+  <div class="panel">
+    <h2>Alerts & Insights</h2>
+    <div id="alertsList"></div>
+  </div>
+</section>
+
+<!-- ============ COMPARE TAB ============ -->
+<section class="tab" id="tab-compare">
+  <div class="panel">
+    <div class="row between">
+      <h2>Current vs. Proposed Schedule</h2>
+      <div class="row no-print">
+        <button class="btn small secondary" onclick="App.buildProposal()">Build proposal from forecast</button>
+        <button class="btn small secondary" onclick="App.clearProposal()">Clear proposal</button>
+        <button class="btn small" onclick="App.applyProposal()" id="applyBtn" disabled>Apply proposed</button>
+      </div>
+    </div>
+    <div id="compareBody"><p class="muted">Run a forecast first (Sales & Forecast tab), then click “Build proposal from forecast”.</p></div>
+  </div>
+</section>
+
+<!-- ============ IMPORT/EXPORT TAB ============ -->
+<section class="tab" id="tab-io">
+  <div class="grid c2">
+    <div class="panel">
+      <h2>Import Schedule (Excel / CSV)</h2>
+      <p class="muted">Format: first column = employee name, then 7 day columns (Sun–Sat) with shifts like <span class="mono">9-4</span>, <span class="mono">3:30-10:30</span>, or <span class="mono">off</span>.</p>
+      <div class="drop" id="dropSchedule">📂 Drop .xlsx / .csv here or click to browse</div>
+      <input type="file" id="fileSchedule" accept=".xlsx,.xls,.csv" hidden>
+      <div class="row" style="margin-top:10px">
+        <button class="btn small secondary" onclick="App.downloadScheduleTemplate()">Download template</button>
+        <button class="btn small secondary" onclick="App.loadSampleData(true)">Reset to sample data</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Import Sales Reports (PDF / CSV)</h2>
+      <p class="muted">“Sales &amp; Labor By Time” PDFs (multi-select up to 7 days) or CSV with columns: <span class="mono">date,time_block,revenue,guests</span>.</p>
+      <div class="drop" id="dropSales">📊 Drop PDFs / CSV here or click to browse</div>
+      <input type="file" id="fileSales" accept=".pdf,.csv" multiple hidden>
+      <div id="salesImportStatus" style="margin-top:10px"></div>
+    </div>
+    <div class="panel">
+      <h2>Exports</h2>
+      <div class="row">
+        <button class="btn secondary" onclick="App.printSchedule()">🖨 Weekly schedule (PDF via print)</button>
+        <button class="btn secondary" onclick="App.exportCSV()">⬇ Payroll CSV</button>
+        <button class="btn secondary" onclick="App.printConflicts()">🖨 Conflicts report</button>
+        <button class="btn secondary" onclick="App.exportConfig()">⬇ Config JSON</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Import Config</h2>
+      <div class="drop" id="dropConfig">⚙️ Drop config .json here or click to browse</div>
+      <input type="file" id="fileConfig" accept=".json" hidden>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SETTINGS TAB ============ -->
+<section class="tab" id="tab-settings">
+  <div class="settings-grid" id="settingsGrid"></div>
+  <div class="row" style="margin-top:14px">
+    <button class="btn" onclick="App.saveSettings()">Save Settings</button>
+    <button class="btn secondary" onclick="App.resetSettings()">Reset to defaults</button>
+  </div>
+</section>
+</main>
+
+<!-- Shift modal -->
+<div class="modal-bg" id="modalBg" onclick="if(event.target===this)App.closeModal()">
+  <div class="modal">
+    <h2 id="modalTitle">Edit Shift</h2>
+    <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:12px">
+      <label class="fld">Employee <input id="mEmp" list="empNames"><datalist id="empNames"></datalist></label>
+      <label class="fld">Day
+        <select id="mDay"><option value="sun">Sun</option><option value="mon">Mon</option><option value="tue">Tue</option><option value="wed">Wed</option><option value="thu">Thu</option><option value="fri">Fri</option><option value="sat">Sat</option></select>
+      </label>
+      <label class="fld">Start (24h HH:MM) <input id="mStart" placeholder="09:00"></label>
+      <label class="fld">End (24h HH:MM) <input id="mEnd" placeholder="16:00"></label>
+    </div>
+    <div id="mBreakInfo" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn secondary" onclick="App.deleteShift()" id="mDelete">Delete shift</button>
+      <button class="btn secondary" onclick="App.closeModal()">Cancel</button>
+      <button class="btn" onclick="App.saveShift()">Save</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+"use strict";
+/* ================= CORE: state, config, utils, break engine ================= */
+const DAYS = ["sun","mon","tue","wed","thu","fri","sat"];
+const DAY_LABEL = {sun:"Sun",mon:"Mon",tue:"Tue",wed:"Wed",thu:"Thu",fri:"Fri",sat:"Sat"};
+
+const DEFAULT_CONFIG = {
+  name: "Panda Express #2355 — Config",
+  shiftThresholds: { morningCutoff: "12:00", nightCutoff: "12:00", midShiftCounted: true },
+  storeHours: {
+    sun:{open:"09:00",close:"22:30"}, mon:{open:"09:00",close:"22:00"},
+    tue:{open:"09:00",close:"22:00"}, wed:{open:"09:00",close:"22:00"},
+    thu:{open:"09:00",close:"22:00"}, fri:{open:"09:00",close:"22:00"},
+    sat:{open:"09:00",close:"22:30"}
+  },
+  mealBreakRules: {
+    minShiftDuration: 6.0,
+    breakDuration: 30,
+    blackoutHours: [
+      {start:"12:00", end:"14:00", reason:"Lunch rush"},
+      {start:"17:00", end:"20:00", reason:"Dinner rush"}
+    ]
+  },
+  specialDays: { wed:{extraEarlyStarters:2,reason:"Delivery day"}, sat:{extraEarlyStarters:2,reason:"Weekend prep"} },
+  busynessMultipliers: { day:1.0, night:1.5 },
+  payroll: { averageHourlyWage: 18.00 },
+  staffingBands: { low:3, high:5 } // <low = red, >=high = green
+};
+
+let state = {
+  config: JSON.parse(JSON.stringify(DEFAULT_CONFIG)),
+  shifts: [],           // {id, employee, day, start, end, breakStart|null, override:false}
+  sales: null,          // {label, days:[{day,date,total,hourly:{[h]:revenue}}], guests}
+  forecast: null,       // output of runForecast
+  proposal: null,       // proposed staffing changes
+  nextId: 1,
+  weekLabel: "Week of 07/19–07/25/2026"
+};
+
+/* ---------- time utils (minutes since midnight) ---------- */
+function toMin(t){ if(t==null||t==="")return null; const m=String(t).match(/^(\d{1,2}):(\d{2})$/); if(!m)return null; return (+m[1])*60+(+m[2]); }
+function toHM(min){ min=Math.round(min); const h=Math.floor(min/60)%24, m=min%60; return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0"); }
+function fmt12(min){ if(min==null)return "—"; let h=Math.floor(min/60), m=min%60; const ap=h>=12?"PM":"AM"; h=h%12||12; return h+(m?":"+String(m).padStart(2,"0"):"")+" "+ap; }
+function fmt12r(a,b){ return fmt12(a)+"–"+fmt12(b); }
+function durH(s){ return (toMin(s.end)-toMin(s.start))/60; }
+function money(n){ return "$"+Math.round(n).toLocaleString(); }
+
+/* Parse "9-4", "3:30-10:30", "7:30-3" -> {start,end} 24h, choosing most plausible AM/PM */
+function parseShiftText(txt, day, cfg){
+  if(!txt) return null;
+  const t = String(txt).trim().toLowerCase();
+  if(t===""||t==="off"||t==="-"||t==="x") return null;
+  const m = t.match(/(\d{1,2})(?::(\d{2}))?\s*(a|am|p|pm)?\s*[-–—to]+\s*(\d{1,2})(?::(\d{2}))?\s*(a|am|p|pm)?/);
+  if(!m) return null;
+  let h1=+m[1], m1=+(m[2]||0), ap1=m[3], h2=+m[4], m2=+(m[5]||0), ap2=m[6];
+  const open = toMin(cfg.storeHours[day]?.open||"09:00"), close = toMin(cfg.storeHours[day]?.close||"22:30");
+  function cand(a,b){ return {s:a,e:b}; }
+  const opts=[];
+  const s12 = h1%12*60+m1, e12 = h2%12*60+m2;
+  const combos = [];
+  if(ap1&&ap2){ combos.push([s12+(ap1[0]==="p"?720:0), e12+(ap2[0]==="p"?720:0)]); }
+  else { for(const pa of [0,720]) for(const pb of [0,720]) combos.push([s12+pa, e12+pb]); }
+  for(const [a,b] of combos){
+    if(b<=a) continue;
+    const d=(b-a)/60;
+    if(d<2||d>12) continue;
+    let score=0;
+    if(a>=open-120 && b<=close+30) score+=10;          // fits store hours-ish
+    if(d>=4&&d<=9) score+=4;
+    if(a>=open) score+=2;
+    opts.push({...cand(a,b),score});
+  }
+  if(!opts.length) return null;
+  opts.sort((x,y)=>y.score-x.score);
+  return { start: toHM(opts[0].s), end: toHM(opts[0].e) };
+}
+
+/* ---------- meal break engine ---------- */
+function blackoutsMin(cfg){ return cfg.mealBreakRules.blackoutHours.map(b=>({s:toMin(b.start),e:toMin(b.end),reason:b.reason})); }
+
+function requiresBreak(shift, cfg){ return durH(shift) > cfg.mealBreakRules.minShiftDuration; }
+
+// Returns list of candidate windows {s,e,priority} sorted best-first
+function validBreakWindows(shift, cfg){
+  const bd = cfg.mealBreakRules.breakDuration;
+  const S = toMin(shift.start), E = toMin(shift.end);
+  const bos = blackoutsMin(cfg);
+  const wins = [];
+  for(let t=S; t+bd<=E; t+=15){
+    const clash = bos.some(b => t < b.e && t+bd > b.s);
+    if(clash) continue;
+    const mid = t > S+60 && t+bd < E-60;   // prefer not first/last hour
+    wins.push({s:t, e:t+bd, priority: mid?2:1});
+  }
+  // rank: mid-shift first, then closeness to shift midpoint with a bias toward
+  // post-rush (later-half) windows, matching manager preference
+  const midShift=(S+E)/2;
+  const score=w=>{ const m=(w.s+w.e)/2; return Math.abs(m-midShift)*(m<midShift?3:1); };
+  wins.sort((a,b)=> b.priority-a.priority || score(a)-score(b));
+  return wins;
+}
+
+// Distinct display options (start of each free block, mid, post-rush)
+function displayWindows(shift, cfg){
+  const all = validBreakWindows(shift, cfg);
+  if(!all.length) return [];
+  const picks=[]; const seen=new Set();
+  const add=w=>{ const k=w.s; if(!seen.has(k)){seen.add(k);picks.push(w);} };
+  add(all[0]); // best (suggested)
+  // earliest and latest valid
+  const chrono=[...all].sort((a,b)=>a.s-b.s);
+  add(chrono[0]); add(chrono[chrono.length-1]);
+  // one after each blackout end
+  for(const b of blackoutsMin(cfg)){ const w=chrono.find(w=>w.s>=b.e && w.s<=b.e+30); if(w) add(w); }
+  return picks.sort((a,b)=>a.s-b.s).slice(0,5).map(w=>({...w, suggested: w.s===all[0].s}));
+}
+
+function shiftStatus(shift, cfg){
+  if(!requiresBreak(shift,cfg)) return {code:"no_break_needed", label:"≤"+cfg.mealBreakRules.minShiftDuration+"h — 10-min breaks only", level:"ok"};
+  const wins = validBreakWindows(shift,cfg);
+  if(!wins.length) return {code:"no_valid_break_window", label:"No valid break window", level:"crit"};
+  if(shift.breakStart!=null){
+    const bs=toMin(shift.breakStart), bd=cfg.mealBreakRules.breakDuration;
+    const stillValid = !blackoutsMin(cfg).some(b=> bs < b.e && bs+bd > b.s) && bs>=toMin(shift.start) && bs+bd<=toMin(shift.end);
+    if(stillValid) return {code:"scheduled", label:"Break "+fmt12r(bs,bs+bd), level:"ok"};
+    return {code:"invalid_assignment", label:"Assigned break now invalid", level:"crit"};
+  }
+  const distinctBlocks = new Set(wins.map(w=>Math.floor(w.s/60))).size;
+  if(distinctBlocks<=1) return {code:"single_window", label:"Unassigned — only one narrow window", level:"warn"};
+  return {code:"unassigned", label:"Break not yet assigned", level:"warn"};
+}
+
+function autoAssign(shift, cfg){
+  if(!requiresBreak(shift,cfg)){ shift.breakStart=null; return; }
+  const wins = validBreakWindows(shift,cfg);
+  shift.breakStart = wins.length ? toHM(wins[0].s) : null;
+}
+
+/* ---------- coverage ---------- */
+function staffAt(day, hourMin){
+  return state.shifts.filter(s=> s.day===day && toMin(s.start)<=hourMin && toMin(s.end)>hourMin).length;
+}
+function hoursRange(){ // union of store hours across week, whole hours
+  let lo=24*60, hi=0;
+  for(const d of DAYS){ lo=Math.min(lo,toMin(state.config.storeHours[d].open)); hi=Math.max(hi,toMin(state.config.storeHours[d].close)); }
+  const out=[]; for(let t=Math.floor(lo/60)*60; t<hi; t+=60) out.push(t);
+  return out;
+}
+function laborHours(day){ return state.shifts.filter(s=>s.day===day).reduce((a,s)=>a+durH(s),0); }
+function totalLaborHours(){ return DAYS.reduce((a,d)=>a+laborHours(d),0); }
+
+/* ---------- classification ---------- */
+function classify(){
+  const cut = toMin(state.config.shiftThresholds.morningCutoff);
+  const morning=new Set(), night=new Set(), mid=new Set();
+  for(const s of state.shifts){
+    const st=toMin(s.start), en=toMin(s.end);
+    if(st<=cut) morning.add(s.employee);
+    if(st>cut) night.add(s.employee);
+    if(st<=cut && en>cut) mid.add(s.employee);
+    if(state.config.shiftThresholds.midShiftCounted && st<=cut && en>cut) night.add(s.employee);
+  }
+  return {morning, night, mid};
+}
+
+/* ---------- sample data ---------- */
+const SAMPLE_ROSTER = [
+  ["Thuy",     "9-4",  "3:30-10:30","12-8", "12-8", "",     "",         ""      ],
+  ["Quang",    "12-8", "",          "",     "",     "12-8", "3:30-10:30","2-10:30"],
+  ["Dixi",     "",     "9-4",       "9-4",  "7:30-3","",    "9-4",      ""      ],
+  ["Laura",    "",     "",          "3:30-10:30","", "3:30-10:30","",   "3:30-10:30"],
+  ["James",    "9:30-3","",         "",     "9:30-3","",    "9:30-3",   ""      ],
+  ["Maria",    "",     "11-7:30",   "",     "11-7:30","11-7:30","",     "11-7:30"],
+  ["Kevin",    "4-10", "",          "4-10", "",     "4-10", "4-10:30",  ""      ],
+  ["Ana",      "",     "9-2",       "9-2",  "",     "9-2",  "",         "9-2"   ],
+  ["Marcus",   "2-10:30","",        "",     "2-10", "",     "2-10:30",  "2-10:30"],
+  ["Priya",    "",     "4:30-10",   "",     "4:30-10","4:30-10","",     "4:30-10"]
+];
+// hourly sales % shape (9AM..21PM) — normalized in code
+const SAMPLE_SHAPE = {9:1.2,10:2.2,11:4.6,12:9.4,13:9.0,14:6.8,15:5.6,16:6.2,17:9.8,18:11.6,19:11.0,20:8.6,21:5.6,22:2.4};
+const SAMPLE_TOTALS = {sun:9800,mon:9200,tue:9400,wed:11523,thu:9900,fri:8649,sat:11299};
+const SAMPLE_DATES = {sun:"2026-07-19",mon:"2026-07-20",tue:"2026-07-21",wed:"2026-07-22",thu:"2026-07-23",fri:"2026-07-24",sat:"2026-07-25"};
+
+function buildSampleSales(){
+  const shapeSum = Object.values(SAMPLE_SHAPE).reduce((a,b)=>a+b,0);
+  const days = DAYS.map(d=>{
+    const hourly={};
+    for(const h in SAMPLE_SHAPE) hourly[h] = SAMPLE_TOTALS[d]*SAMPLE_SHAPE[h]/shapeSum;
+    return {day:d, date:SAMPLE_DATES[d], total:SAMPLE_TOTALS[d], hourly, guests: Math.round(SAMPLE_TOTALS[d]/18.92)};
+  });
+  return {label:"07/19–07/25 (sample)", days};
+}
+
+function loadSample(){
+  state.shifts=[]; state.nextId=1;
+  SAMPLE_ROSTER.forEach(row=>{
+    const name=row[0];
+    DAYS.forEach((d,i)=>{
+      const parsed = parseShiftText(row[i+1], d, state.config);
+      if(parsed) state.shifts.push({id:state.nextId++, employee:name, day:d, start:parsed.start, end:parsed.end, breakStart:null});
+    });
+  });
+  state.shifts.forEach(s=>autoAssign(s,state.config));
+  state.sales = buildSampleSales();
+}
+
+/* ---------- persistence ---------- */
+const LS_KEY="panda2355_v1";
+function persist(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify({config:state.config, shifts:state.shifts, sales:state.sales, nextId:state.nextId, weekLabel:state.weekLabel})); }catch(e){}
+}
+function restore(){
+  try{
+    const raw=localStorage.getItem(LS_KEY); if(!raw) return false;
+    const d=JSON.parse(raw);
+    if(!d.shifts||!d.shifts.length) return false;
+    state.config={...JSON.parse(JSON.stringify(DEFAULT_CONFIG)),...d.config};
+    state.shifts=d.shifts; state.sales=d.sales; state.nextId=d.nextId||1000; state.weekLabel=d.weekLabel||state.weekLabel;
+    return true;
+  }catch(e){ return false; }
+}
+</script>
+<script>
+/* ================= UI: schedule tab, breaks tab, modal ================= */
+const App = {};
+const $ = id => document.getElementById(id);
+
+App.toast = function(msg){
+  const t=$("toast"); t.textContent=msg; t.style.display="block";
+  clearTimeout(App._tt); App._tt=setTimeout(()=>t.style.display="none", 3200);
+};
+
+App.switchTab = function(name){
+  document.querySelectorAll(".tab").forEach(el=>el.classList.remove("active"));
+  document.querySelectorAll("nav button").forEach(el=>el.classList.toggle("active", el.dataset.tab===name));
+  $("tab-"+name).classList.add("active");
+  if(name==="sales") App.renderSales();
+  if(name==="coverage") App.renderCoverage();
+  if(name==="breaks") App.renderBreaksTab();
+  if(name==="compare") App.renderCompare();
+  if(name==="settings") App.renderSettings();
+};
+
+App.renderAll = function(){
+  $("weekLabel").textContent = state.weekLabel;
+  App.renderSummaryCards();
+  App.renderHeatMap();
+  App.renderEmpTable();
+  App.renderBreaksTab();
+  persist();
+};
+
+/* ---------- summary cards ---------- */
+App.renderSummaryCards = function(){
+  const cls = classify();
+  const cfg = state.config;
+  const shifts = state.shifts;
+  const needs = shifts.filter(s=>requiresBreak(s,cfg));
+  const assigned = needs.filter(s=>shiftStatus(s,cfg).code==="scheduled");
+  const crits = shifts.filter(s=>shiftStatus(s,cfg).level==="crit");
+  const morningStarts = shifts.filter(s=>toMin(s.start)<=toMin(cfg.shiftThresholds.morningCutoff));
+  const avgStart = a => a.length? fmt12(a.reduce((x,s)=>x+toMin(s.start),0)/a.length) : "—";
+  const nightShifts = shifts.filter(s=>toMin(s.start)>toMin(cfg.shiftThresholds.morningCutoff));
+  $("summaryCards").innerHTML = `
+    <div class="card"><h4>Morning coverage (≤${fmt12(toMin(cfg.shiftThresholds.morningCutoff))} start)</h4>
+      <div class="big">${cls.morning.size} <span class="tag">employees</span></div>
+      <div class="sub">Avg shift start: ${avgStart(morningStarts)} · Wed+Sat: +${cfg.specialDays.wed?.extraEarlyStarters||0} expected (delivery)</div></div>
+    <div class="card"><h4>Night coverage</h4>
+      <div class="big">${cls.night.size} <span class="tag">employees</span></div>
+      <div class="sub">Avg shift start: ${avgStart(nightShifts)}</div></div>
+    <div class="card"><h4>Mid-shift overlap (crosses cutoff)</h4>
+      <div class="big">${cls.mid.size} <span class="tag">employees</span></div>
+      <div class="sub">Bridges morning ↔ night${cfg.shiftThresholds.midShiftCounted?" (counted in both)":""}</div></div>
+    <div class="card"><h4>Meal break status</h4>
+      <div class="big">${assigned.length}/${needs.length} <span class="tag">assigned</span></div>
+      <div class="sub">${crits.length? '🔴 '+crits.length+' conflict(s) — resolve before export' : '✓ No conflicts'}</div></div>`;
+};
+
+/* ---------- heat map ---------- */
+App.cellClass = function(n, day, hourMin){
+  const cfg=state.config;
+  const open=toMin(cfg.storeHours[day].open), close=toMin(cfg.storeHours[day].close);
+  if(hourMin<open||hourMin>=close) return "cell-off";
+  if(n>=cfg.staffingBands.high) return "cell-g";
+  if(n>=cfg.staffingBands.low) return "cell-y";
+  return "cell-r";
+};
+
+App.renderHeatMap = function(){
+  const hrs = hoursRange();
+  const salesByHour = App.hourlySalesAvg();
+  const maxSales = Math.max(1,...Object.values(salesByHour));
+  let html = "<tr><th>Hour</th>"+DAYS.map(d=>"<th>"+DAY_LABEL[d]+"</th>").join("")+"<th>Sales intensity</th></tr>";
+  for(const t of hrs){
+    const h=t/60;
+    const pct = (salesByHour[h]||0)/maxSales;
+    const dots = "●".repeat(Math.max(0,Math.round(pct*7)))||"·";
+    html += "<tr><td class='mono'>"+fmt12(t)+"</td>";
+    for(const d of DAYS){
+      const open=toMin(state.config.storeHours[d].open), close=toMin(state.config.storeHours[d].close);
+      const inHours = t>=open && t<close;
+      const n = inHours? staffAt(d,t) : null;
+      html += "<td class='"+App.cellClass(n??0,d,t)+"'>"+(inHours? n : "–")+"</td>";
+    }
+    html += "<td class='muted mono' style='text-align:left'>"+dots+"</td></tr>";
+  }
+  $("heatMap").innerHTML = html;
+};
+
+App.hourlySalesAvg = function(){
+  const out={};
+  if(!state.sales) return out;
+  for(const d of state.sales.days) for(const h in d.hourly) out[h]=(out[h]||0)+d.hourly[h]/state.sales.days.length;
+  return out;
+};
+
+/* ---------- employee table ---------- */
+App.renderEmpTable = function(){
+  const emps=[...new Set(state.shifts.map(s=>s.employee))];
+  let html="<tr><th>Name</th>"+DAYS.map(d=>"<th>"+DAY_LABEL[d]+"</th>").join("")+"<th>Hours</th></tr>";
+  for(const e of emps){
+    let tot=0;
+    html+="<tr><td><b>"+e+"</b></td>";
+    for(const d of DAYS){
+      const s=state.shifts.find(x=>x.employee===e&&x.day===d);
+      if(!s){ html+="<td class='muted'>off</td>"; continue; }
+      tot+=durH(s);
+      const st=shiftStatus(s,state.config);
+      let brk="";
+      if(requiresBreak(s,state.config)){
+        if(st.code==="scheduled") brk="<div class='brk'>🍽 "+fmt12(toMin(s.breakStart))+"</div>";
+        else if(st.level==="crit") brk="<div class='brk crit'>🔴 no window</div>";
+        else brk="<div class='brk warn'>⚠️ "+ (st.code==="single_window"?"1 window":"unassigned") +"</div>";
+      }
+      html+="<td><div class='shift-cell' onclick='App.openShiftModal("+s.id+")'><span class='mono'>"+fmt12(toMin(s.start))+"–"+fmt12(toMin(s.end))+"</span> <span class='tag'>("+durH(s).toFixed(1).replace(/\.0$/,"")+"h)</span>"+brk+"</div></td>";
+    }
+    html+="<td class='mono'>"+tot.toFixed(1)+"</td></tr>";
+  }
+  html+="<tr><td class='muted'>Daily labor hrs</td>"+DAYS.map(d=>"<td class='mono muted'>"+laborHours(d).toFixed(1)+"</td>").join("")+"<td class='mono'><b>"+totalLaborHours().toFixed(1)+"</b></td></tr>";
+  $("empTable").innerHTML=html;
+};
+
+/* ---------- shift modal ---------- */
+App._editing=null;
+App.openShiftModal = function(id){
+  App._editing = id==null? null : state.shifts.find(s=>s.id===id);
+  $("modalTitle").textContent = App._editing? "Edit Shift" : "Add Shift";
+  $("mDelete").style.display = App._editing? "" : "none";
+  $("empNames").innerHTML=[...new Set(state.shifts.map(s=>s.employee))].map(e=>"<option value='"+e+"'>").join("");
+  $("mEmp").value=App._editing?.employee||"";
+  $("mDay").value=App._editing?.day||"mon";
+  $("mStart").value=App._editing?.start||"";
+  $("mEnd").value=App._editing?.end||"";
+  App.updateModalBreakInfo();
+  $("mStart").oninput=$("mEnd").oninput=App.updateModalBreakInfo;
+  $("modalBg").classList.add("open");
+};
+App.updateModalBreakInfo = function(){
+  const s={start:$("mStart").value,end:$("mEnd").value};
+  const box=$("mBreakInfo");
+  if(toMin(s.start)==null||toMin(s.end)==null||toMin(s.end)<=toMin(s.start)){ box.innerHTML="<span class='muted'>Enter valid start/end times (24h).</span>"; return; }
+  if(!requiresBreak(s,state.config)){ box.innerHTML="<span class='badge b-ok'>"+durH(s).toFixed(1)+"h — no meal break required</span>"; return; }
+  const wins=displayWindows(s,state.config);
+  if(!wins.length){ box.innerHTML="<span class='badge b-crit'>⚠️ "+durH(s).toFixed(1)+"h — NO valid break window with current blackouts</span>"; return; }
+  box.innerHTML="<span class='badge b-info'>"+durH(s).toFixed(1)+"h — break required.</span> <span class='muted'>Valid windows: "+wins.map(w=>fmt12(w.s)).join(", ")+" (auto-assigned on save; adjust in Meal Breaks tab)</span>";
+};
+App.closeModal = function(){ $("modalBg").classList.remove("open"); };
+App.saveShift = function(){
+  const emp=$("mEmp").value.trim(), day=$("mDay").value, start=$("mStart").value.trim(), end=$("mEnd").value.trim();
+  if(!emp||toMin(start)==null||toMin(end)==null||toMin(end)<=toMin(start)){ App.toast("⚠️ Check employee name and HH:MM times."); return; }
+  if(App._editing){ Object.assign(App._editing,{employee:emp,day,start,end}); autoAssign(App._editing,state.config); }
+  else{
+    const dup=state.shifts.find(s=>s.employee===emp&&s.day===day);
+    if(dup){ App.toast("⚠️ "+emp+" already has a "+DAY_LABEL[day]+" shift. Edit it instead."); return; }
+    const s={id:state.nextId++,employee:emp,day,start,end,breakStart:null};
+    autoAssign(s,state.config); state.shifts.push(s);
+  }
+  App.closeModal(); App.renderAll(); App.toast("✓ Shift saved");
+};
+App.deleteShift = function(){
+  state.shifts=state.shifts.filter(s=>s!==App._editing);
+  App.closeModal(); App.renderAll(); App.toast("Shift deleted");
+};
+App.autoAssignAll = function(){
+  state.shifts.forEach(s=>{ if(!s.override) autoAssign(s,state.config); });
+  App.renderAll(); App.toast("✓ Breaks auto-assigned to best valid windows");
+};
+
+/* ---------- breaks tab ---------- */
+App.renderBreaksTab = function(){
+  const sel=$("breakShiftSelect");
+  const cur=sel.value;
+  sel.innerHTML=state.shifts
+    .filter(s=>requiresBreak(s,state.config))
+    .map(s=>"<option value='"+s.id+"'>"+s.employee+" — "+DAY_LABEL[s.day]+" "+fmt12(toMin(s.start))+"–"+fmt12(toMin(s.end))+"</option>").join("");
+  if(cur && [...sel.options].some(o=>o.value===cur)) sel.value=cur;
+  App.renderBreakPanel();
+  App.renderConflictReport();
+};
+
+App.renderBreakPanel = function(){
+  const id=+$("breakShiftSelect").value;
+  const s=state.shifts.find(x=>x.id===id);
+  const box=$("breakPanel");
+  if(!s){ box.innerHTML="<p class='muted'>No shifts over "+state.config.mealBreakRules.minShiftDuration+"h — nothing to schedule.</p>"; return; }
+  const cfg=state.config, S=toMin(s.start), E=toMin(s.end), span=E-S;
+  const pos=t=>((t-S)/span*100).toFixed(1)+"%";
+  const wid=(a,b)=>((b-a)/span*100).toFixed(1)+"%";
+  let tl="<div class='timeline'><div class='tl-seg tl-shift' style='left:0;width:100%'></div>";
+  for(const b of blackoutsMin(cfg)){
+    const a=Math.max(S,b.s), z=Math.min(E,b.e);
+    if(z>a) tl+="<div class='tl-seg tl-blackout' style='left:"+pos(a)+";width:"+wid(a,z)+"' title='"+b.reason+"'></div>";
+  }
+  if(s.breakStart!=null){ const bs=toMin(s.breakStart); tl+="<div class='tl-seg tl-break' style='left:"+pos(bs)+";width:"+wid(bs,bs+cfg.mealBreakRules.breakDuration)+"'></div>"; }
+  tl+="<div class='tl-label' style='left:2px'>"+fmt12(S)+"</div><div class='tl-label' style='right:2px'>"+fmt12(E)+"</div></div>";
+
+  const wins=displayWindows(s,cfg);
+  const st=shiftStatus(s,cfg);
+  let winsHtml;
+  if(!wins.length){
+    winsHtml="<div class='alert-item crit'>⚠️ <div><b>No valid break window.</b><br>Options: extend the shift past a blackout, split the shift, or acknowledge a manager override.<br><button class='btn small secondary' style='margin-top:6px' onclick='App.overrideBreak("+s.id+")'>Acknowledge override (no break)</button></div></div>";
+  } else {
+    winsHtml="<div class='row'>"+wins.map(w=>{
+      const selCls = s.breakStart!=null&&toMin(s.breakStart)===w.s?" selected":"";
+      return "<button class='win-btn"+selCls+(w.suggested?" suggested":"")+"' onclick='App.assignBreak("+s.id+","+w.s+")'>"+fmt12r(w.s,w.e)+"</button>";
+    }).join("")+"</div><p class='tag' style='margin-top:6px'>★ = suggested (mid-shift, outside rushes)</p>";
+  }
+  box.innerHTML =
+    "<b>"+s.employee+"</b> — "+DAY_LABEL[s.day]+" "+fmt12(S)+"–"+fmt12(E)+" ("+durH(s).toFixed(1)+"h) "+
+    "<span class='badge b-"+(st.level==="ok"?"ok":st.level==="warn"?"warn":"crit")+"'>"+st.label+"</span>"+
+    tl+
+    "<div class='legend'><span><span class='sw' style='background:rgba(255,90,90,.5)'></span>Blackout (rush)</span><span><span class='sw' style='background:var(--green)'></span>Assigned break</span></div>"+
+    "<h3 style='margin-top:12px'>Valid break windows</h3>"+winsHtml;
+};
+
+App.assignBreak = function(id,startMin){
+  const s=state.shifts.find(x=>x.id===id);
+  s.breakStart=toHM(startMin); s.override=true;
+  App.renderAll(); App.renderBreakPanel();
+  App.toast("✓ Break locked: "+s.employee+" "+fmt12(startMin));
+};
+App.overrideBreak = function(id){
+  const s=state.shifts.find(x=>x.id===id);
+  s.breakStart=null; s.override=true; s.ack=true;
+  App.renderAll(); App.renderBreakPanel();
+  App.toast("Override acknowledged — logged for audit");
+};
+
+App.conflictLists = function(){
+  const cfg=state.config, crit=[],warn=[],ok=[];
+  for(const s of state.shifts){
+    const st=shiftStatus(s,cfg);
+    const d=durH(s);
+    if(st.level==="crit" && !s.ack) crit.push({s,msg:st.code==="no_valid_break_window"?"No valid break window — blackouts cover the whole shift. ACTION: extend/split shift or override.":"Assigned break is now inside a blackout. ACTION: re-assign."});
+    else if(st.level==="warn") warn.push({s,msg:st.code==="single_window"?"Only one narrow break window available — verify acceptable.":"Break required but not yet assigned."});
+    else if(!requiresBreak(s,cfg) && d>cfg.mealBreakRules.minShiftDuration-0.5) warn.push({s,msg:"Shift "+d.toFixed(1)+"h — close to "+cfg.mealBreakRules.minShiftDuration+"h threshold. Overtime would require a meal break."});
+    else ok.push(s);
+  }
+  return {crit,warn,ok};
+};
+
+App.renderConflictReport = function(){
+  const {crit,warn,ok}=App.conflictLists();
+  const item=(c,cls,icon)=>"<div class='alert-item "+cls+"'>"+icon+"<div><b>"+c.s.employee+"</b> ("+DAY_LABEL[c.s.day]+" "+fmt12(toMin(c.s.start))+"–"+fmt12(toMin(c.s.end))+"): "+c.msg+"</div></div>";
+  $("conflictReport").innerHTML =
+    "<h3>🔴 Critical ("+crit.length+")</h3>"+(crit.map(c=>item(c,"crit","🔴")).join("")||"<p class='muted'>None</p>")+
+    "<h3 style='margin-top:10px'>🟡 Warning ("+warn.length+")</h3>"+(warn.map(c=>item(c,"warn","🟡")).join("")||"<p class='muted'>None</p>")+
+    "<h3 style='margin-top:10px'>✓ OK ("+ok.length+")</h3><p class='muted'>"+ok.length+" shifts have valid break status.</p>";
+};
+</script>
+<script>
+/* ================= SALES, FORECAST, COVERAGE, COMPARE ================= */
+App._charts = {};
+
+App.renderSales = function(){
+  const cfg=state.config;
+  $("multDayLbl").textContent=cfg.busynessMultipliers.day;
+  $("multNightLbl").textContent=cfg.busynessMultipliers.night;
+  if(!state.sales){ $("salesCards").innerHTML="<div class='card'><h4>No sales data</h4><div class='sub'>Import PDFs/CSV in Import/Export tab.</div></div>"; return; }
+  const days=state.sales.days;
+  const total=days.reduce((a,d)=>a+d.total,0);
+  const peak=days.reduce((a,d)=>d.total>a.total?d:a);
+  const slow=days.reduce((a,d)=>d.total<a.total?d:a);
+  const guests=days.reduce((a,d)=>a+(d.guests||0),0);
+  const hourly=App.hourlySalesAvg();
+  const peakHour=Object.entries(hourly).sort((a,b)=>b[1]-a[1])[0];
+  $("salesCards").innerHTML=`
+    <div class="card"><h4>Weekly total</h4><div class="big">${money(total)}</div><div class="sub">${state.sales.label}</div></div>
+    <div class="card"><h4>Daily average</h4><div class="big">${money(total/7)}</div><div class="sub">Avg ticket: ${guests?"$"+(total/guests).toFixed(2):"—"}</div></div>
+    <div class="card"><h4>Peak day</h4><div class="big">${DAY_LABEL[peak.day]} ${money(peak.total)}</div><div class="sub">Slowest: ${DAY_LABEL[slow.day]} ${money(slow.total)}</div></div>
+    <div class="card"><h4>Peak hour</h4><div class="big">${peakHour?fmt12(+peakHour[0]*60):"—"}</div><div class="sub">${peakHour?"avg "+money(peakHour[1])+"/day":""}</div></div>`;
+
+  const mkChart=(id,cfgc)=>{ if(App._charts[id])App._charts[id].destroy(); App._charts[id]=new Chart($(id),cfgc); };
+  const gridCol="rgba(139,147,165,.15)", tickCol="#8b93a5";
+  mkChart("dailyChart",{type:"bar",data:{labels:days.map(d=>DAY_LABEL[d.day]),datasets:[{data:days.map(d=>Math.round(d.total)),backgroundColor:"rgba(214,43,43,.65)",borderRadius:6}]},
+    options:{plugins:{legend:{display:false}},scales:{x:{grid:{color:gridCol},ticks:{color:tickCol}},y:{grid:{color:gridCol},ticks:{color:tickCol,callback:v=>"$"+(v/1000)+"k"}}},maintainAspectRatio:false}});
+  const hrs=Object.keys(hourly).map(Number).sort((a,b)=>a-b);
+  mkChart("hourlyChart",{type:"line",data:{labels:hrs.map(h=>fmt12(h*60)),datasets:[{data:hrs.map(h=>Math.round(hourly[h])),borderColor:"#ff6b4a",backgroundColor:"rgba(255,107,74,.15)",fill:true,tension:.35,pointRadius:3}]},
+    options:{plugins:{legend:{display:false}},scales:{x:{grid:{color:gridCol},ticks:{color:tickCol,maxRotation:60}},y:{grid:{color:gridCol},ticks:{color:tickCol,callback:v=>"$"+v}}},maintainAspectRatio:false}});
+};
+
+/* ---------- forecast ---------- */
+App.runForecast = function(){
+  if(!state.sales){ App.toast("⚠️ Import sales data first."); return; }
+  const mode=$("fcMode").value, val=+$("fcValue").value, adj=+$("fcAdjust").value;
+  const baseTotal=state.sales.days.reduce((a,d)=>a+d.total,0);
+  const target=(mode==="growth"? baseTotal*(1+val/100) : val)*adj;
+  const growth=target/baseTotal;
+  const cfg=state.config, wage=cfg.payroll.averageHourlyWage;
+  const hourly=App.hourlySalesAvg();               // avg $ per hour-of-day per day
+  const hrs=Object.keys(hourly).map(Number).sort((a,b)=>a-b);
+  // revenue-per-staff-hour baseline per hour of day (avg across week)
+  const rows=hrs.map(h=>{
+    const t=h*60;
+    const avgStaff = DAYS.reduce((a,d)=>a+staffAt(d,t),0)/7;
+    const mult = t>=17*60 ? cfg.busynessMultipliers.night : cfg.busynessMultipliers.day;
+    const baseRev=hourly[h]||0;
+    const fcRev=baseRev*growth;
+    const rpsh = avgStaff>0 ? baseRev/avgStaff : baseRev; // revenue per staff-hour
+    const recommended = Math.max(avgStaff>0?1:0, Math.ceil(fcRev*mult/Math.max(rpsh*mult,1)/1));
+    // simpler robust heuristic: scale current staffing by demand growth, weighted by multiplier
+    const rec2 = Math.ceil(avgStaff * growth * (mult/cfg.busynessMultipliers.day) - 0.25);
+    const rec = Math.max(recommended>0?Math.min(recommended,rec2):rec2, Math.round(avgStaff));
+    const gap = rec - Math.round(avgStaff);
+    const lossPerMissing = fcRev*0.12; // est. 12% of hour revenue at risk per missing head
+    return {h, current:Math.round(avgStaff), recommended:rec, gap, fcRev, loss: gap>0? gap*lossPerMissing:0,
+      risk: gap>=2?"CRITICAL": gap===1?"UNDER": gap<0?"OVER":"OK"};
+  });
+  state.forecast={target, baseTotal, growth, rows, label:(mode==="growth"? "+"+val+"%":"target "+money(val))+(adj!==1?" with adjustment":"")};
+  App.renderForecast();
+  persist();
+};
+
+App.renderForecast = function(){
+  const f=state.forecast; if(!f) return;
+  $("forecastPanel").style.display="";
+  $("forecastTitle").textContent="Forecast Results: "+f.label+" → weekly target "+money(f.target)+" (baseline "+money(f.baseTotal)+")";
+  let html="<tr><th>Hour</th><th>Current avg</th><th>Recommended</th><th>Gap</th><th>Fcst $/hr (day avg)</th><th>Risk</th></tr>";
+  for(const r of f.rows){
+    html+="<tr><td class='mono'>"+fmt12(r.h*60)+"</td><td>"+r.current+"</td><td>"+r.recommended+"</td><td class='mono'>"+(r.gap>0?"+"+r.gap:r.gap)+"</td><td class='mono'>"+money(r.fcRev)+"</td>"+
+      "<td class='risk-"+r.risk+"'>"+(r.risk==="CRITICAL"?"🔴 CRITICAL "+(r.loss?"(−"+money(r.loss)+" at risk)":""):r.risk==="UNDER"?"🟡 UNDER "+(r.loss?"(−"+money(r.loss)+" at risk)":""):r.risk==="OVER"?"🔵 over-staffed":"✓ OK")+"</td></tr>";
+  }
+  $("forecastTable").innerHTML=html;
+  const gapHrs=f.rows.reduce((a,r)=>a+Math.max(0,r.gap),0);
+  const wage=state.config.payroll.averageHourlyWage;
+  const cost=gapHrs*wage*7, risk=f.rows.reduce((a,r)=>a+r.loss,0)*7;
+  const roi=cost>0?(risk/cost):0;
+  $("forecastSummary").innerHTML=`
+    <div class="grid c4">
+      <div class="card"><h4>Total gap</h4><div class="big">${gapHrs} hrs/day</div><div class="sub">${gapHrs*7} hrs/week</div></div>
+      <div class="card"><h4>Cost to fill</h4><div class="big">${money(cost)}/wk</div><div class="sub">${gapHrs*7} hrs × $${wage}/hr</div></div>
+      <div class="card"><h4>Revenue at risk</h4><div class="big">${money(risk)}/wk</div><div class="sub">if left understaffed</div></div>
+      <div class="card"><h4>ROI of filling gaps</h4><div class="big">${roi?roi.toFixed(1)+"×":"—"}</div><div class="sub">${roi>1?"✓ Recommended":"review"}</div></div>
+    </div>
+    <p class="muted" style="margin-top:10px">Next: open <b>A/B Compare</b> → “Build proposal from forecast”.</p>`;
+};
+
+/* ---------- coverage analysis ---------- */
+App.renderCoverage = function(){
+  const blocks=[
+    {name:"Morning rush", s:9*60, e:11*60, note:"Light traffic; opening prep."},
+    {name:"Early lunch", s:11*60, e:12*60, note:"Transition before lunch rush."},
+    {name:"Lunch rush ⭐", s:12*60, e:14*60, note:"Blackout: meal breaks NOT allowed (protects coverage)."},
+    {name:"Mid-shift", s:14*60, e:17*60, note:"Optimal meal-break window — utilize."},
+    {name:"Dinner rush ⭐⭐", s:17*60, e:20*60, note:"Blackout: meal breaks NOT allowed. Highest revenue block."},
+    {name:"Evening wind-down", s:20*60, e:22*60, note:"Thin out after 9 PM (closing team)."}
+  ];
+  const hourly=App.hourlySalesAvg();
+  const totalAvg=Object.values(hourly).reduce((a,b)=>a+b,0)||1;
+  let html="";
+  for(const b of blocks){
+    let staffMin=99, staffMax=0, rev=0;
+    for(let t=b.s;t<b.e;t+=60){
+      const counts=DAYS.map(d=>staffAt(d,t));
+      staffMin=Math.min(staffMin,...counts); staffMax=Math.max(staffMax,...counts);
+      rev+=hourly[t/60]||0;
+    }
+    const pct=(rev/totalAvg*100);
+    const low=state.config.staffingBands.low;
+    const status = staffMin<low ? (b.name.includes("⭐")?"<span class='badge b-crit'>🔴 Under at peak</span>":"<span class='badge b-warn'>🟡 Marginal</span>")
+      : staffMin<state.config.staffingBands.high?"<span class='badge b-warn'>🟡 On-target</span>":"<span class='badge b-ok'>✓ Good</span>";
+    html+=`<div class="alert-item ${staffMin<low?"crit":"ok"}"><div style="min-width:170px"><b>${b.name}</b><br><span class="tag">${fmt12(b.s)}–${fmt12(b.e)}</span></div>
+      <div>Staff: ${staffMin===staffMax?staffMin:staffMin+"–"+staffMax} across week · Sales: ${pct.toFixed(0)}% of daily total (~${money(rev)}/day) · ${status}<br><span class="muted">${b.note}</span></div></div>`;
+  }
+  $("coverageBlocks").innerHTML=html;
+  App.renderAlerts();
+};
+
+App.renderAlerts = function(){
+  const alerts=[];
+  const {crit,warn}=App.conflictLists();
+  crit.forEach(c=>alerts.push({lvl:"crit",msg:c.s.employee+" ("+DAY_LABEL[c.s.day]+" "+fmt12(toMin(c.s.start))+"–"+fmt12(toMin(c.s.end))+"): "+c.msg}));
+  warn.forEach(c=>alerts.push({lvl:"warn",msg:c.s.employee+" ("+DAY_LABEL[c.s.day]+"): "+c.msg}));
+  // coverage vs peaks
+  const low=state.config.staffingBands.low;
+  for(const d of DAYS){
+    for(const t of [12*60,13*60,17*60,18*60,19*60]){
+      const n=staffAt(d,t);
+      const open=toMin(state.config.storeHours[d].open), close=toMin(state.config.storeHours[d].close);
+      if(t>=open&&t<close&&n<low) alerts.push({lvl:"crit",msg:DAY_LABEL[d]+" "+fmt12(t)+": only "+n+" staff during peak. Benchmark: "+state.config.staffingBands.high+"+."});
+    }
+    const sd=state.config.specialDays[d];
+    if(sd){
+      const early=state.shifts.filter(s=>s.day===d&&toMin(s.start)<=toMin("10:00")).length;
+      if(early<sd.extraEarlyStarters+1) alerts.push({lvl:"warn",msg:DAY_LABEL[d]+" morning: "+early+" early starter(s); "+sd.reason.toLowerCase()+" expects +"+sd.extraEarlyStarters+"."});
+    }
+  }
+  if(state.forecast){
+    const gapHrs=state.forecast.rows.reduce((a,r)=>a+Math.max(0,r.gap),0);
+    if(gapHrs>0) alerts.push({lvl:"info",msg:"Forecast "+state.forecast.label+": feasible with +"+gapHrs*7+" labor hours/week (see A/B Compare)."});
+  }
+  if(!crit.length) alerts.push({lvl:"ok",msg:"All meal breaks scheduled; no critical conflicts."});
+  const icon={crit:"🔴",warn:"🟡",info:"ℹ️",ok:"✓"};
+  $("alertsList").innerHTML=alerts.sort((a,b)=>({crit:0,warn:1,info:2,ok:3})[a.lvl]-({crit:0,warn:1,info:2,ok:3})[b.lvl])
+    .map(a=>"<div class='alert-item "+a.lvl+"'>"+icon[a.lvl]+"<div>"+a.msg+"</div></div>").join("");
+};
+
+/* ---------- A/B comparison ---------- */
+App.buildProposal = function(){
+  if(!state.forecast){ App.toast("⚠️ Run a forecast first."); return; }
+  // proposal = per-day extra hours at gap hours
+  const adds=[];
+  for(const r of state.forecast.rows) if(r.gap>0) adds.push({hour:r.h, people:r.gap});
+  state.proposal={adds, extraHoursPerDay: adds.reduce((a,x)=>a+x.people,0)};
+  App.renderCompare(); persist();
+  $("applyBtn").disabled=false;
+};
+App.clearProposal = function(){ state.proposal=null; $("applyBtn").disabled=true; App.renderCompare(); persist(); };
+App.applyProposal = function(){
+  if(!state.proposal) return;
+  // create "Flex" cover shifts grouping contiguous gap hours per day
+  const spans=[]; let cur=null;
+  for(const a of state.proposal.adds.sort((x,y)=>x.hour-y.hour)){
+    for(let i=0;i<a.people;i++){
+      const sp=spans.find(s=>s.end===a.hour&&s.slot===i);
+      if(sp) sp.end=a.hour+1; else spans.push({start:a.hour,end:a.hour+1,slot:i});
+    }
+  }
+  let n=1;
+  for(const d of DAYS){
+    for(const sp of spans){
+      state.shifts.push({id:state.nextId++,employee:"Flex-"+(n++),day:d,start:toHM(sp.start*60),end:toHM(sp.end*60),breakStart:null});
+    }
+  }
+  state.shifts.forEach(s=>{ if(s.employee.startsWith("Flex-")) autoAssign(s,state.config); });
+  App.clearProposal();
+  App.renderAll();
+  App.toast("✓ Proposal applied — Flex cover shifts added for every day");
+};
+
+App.renderCompare = function(){
+  const box=$("compareBody");
+  if(!state.forecast){ box.innerHTML="<p class='muted'>Run a forecast first (Sales & Forecast tab), then click “Build proposal from forecast”.</p>"; return; }
+  if(!state.proposal){ box.innerHTML="<p class='muted'>Forecast ready ("+state.forecast.label+"). Click “Build proposal from forecast”.</p>"; return; }
+  const wage=state.config.payroll.averageHourlyWage;
+  const curHrs=totalLaborHours();
+  const addPerDay=state.proposal.extraHoursPerDay;
+  const propHrs=curHrs+addPerDay*7;
+  const curCost=curHrs*wage, propCost=propHrs*wage;
+  const risk=state.forecast.rows.reduce((a,r)=>a+r.loss,0)*7;
+  const net=risk-(propCost-curCost);
+  const {crit}=App.conflictLists();
+  let rows="";
+  for(const d of DAYS){
+    const c=laborHours(d);
+    rows+="<tr><td>"+DAY_LABEL[d]+"</td><td class='mono'>"+c.toFixed(1)+"</td><td class='mono'>"+(c+addPerDay).toFixed(1)+"</td><td class='mono'>"+(addPerDay?"+"+addPerDay:"—")+"</td></tr>";
+  }
+  box.innerHTML=`
+  <div class="grid c2">
+    <div>
+      <h3>Labor hours by day</h3>
+      <table><tr><th>Day</th><th>Current</th><th>Proposed</th><th>Δ</th></tr>${rows}
+      <tr><td><b>Total</b></td><td class='mono'><b>${curHrs.toFixed(0)}</b></td><td class='mono'><b>${propHrs.toFixed(0)}</b></td><td class='mono'><b>+${(addPerDay*7).toFixed(0)}</b></td></tr></table>
+      <h3 style="margin-top:14px">Staffing additions (from forecast gaps)</h3>
+      <p class="mono">${state.proposal.adds.map(a=>"+"+a.people+" @ "+fmt12(a.hour*60)).join(" · ")||"none"}</p>
+    </div>
+    <div>
+      <h3>Financial impact</h3>
+      <table>
+        <tr><td>Weekly labor cost (current)</td><td class="mono">${money(curCost)}</td></tr>
+        <tr><td>Weekly labor cost (proposed)</td><td class="mono">${money(propCost)}</td></tr>
+        <tr><td>Added cost</td><td class="mono">+${money(propCost-curCost)} (${curCost?((propCost-curCost)/curCost*100).toFixed(1):0}%)</td></tr>
+        <tr><td>Revenue protected (fcst)</td><td class="mono">${money(risk)}</td></tr>
+        <tr><td><b>Net gain</b></td><td class="mono"><b>${net>=0?"+":""}${money(net)}/week (${(propCost-curCost)>0?(risk/(propCost-curCost)).toFixed(1):"∞"}× ROI)</b></td></tr>
+      </table>
+      <h3 style="margin-top:14px">Meal break status</h3>
+      <p>Current: ${state.shifts.filter(s=>requiresBreak(s,state.config)&&shiftStatus(s,state.config).code==="scheduled").length}/${state.shifts.filter(s=>requiresBreak(s,state.config)).length} valid ${crit.length?"· 🔴 "+crit.length+" conflict(s) to resolve":"✓"}</p>
+      <p class="muted">Proposed Flex shifts get breaks auto-assigned on apply.</p>
+    </div>
+  </div>`;
+};
+</script>
+<script>
+/* ================= SETTINGS, IMPORT/EXPORT, INIT ================= */
+App.renderSettings = function(){
+  const c=state.config;
+  const bo=c.mealBreakRules.blackoutHours;
+  $("settingsGrid").innerHTML=`
+  <div class="panel"><h3>1 · Shift thresholds</h3>
+    <label class="fld">Morning cutoff (start at/before ⇒ morning staff) <input id="stMorning" value="${c.shiftThresholds.morningCutoff}"></label><br>
+    <label class="fld">Night cutoff (start after ⇒ night staff) <input id="stNight" value="${c.shiftThresholds.nightCutoff}"></label><br>
+    <label class="row" style="margin-top:8px;font-size:13px"><input type="checkbox" id="stMid" ${c.shiftThresholds.midShiftCounted?"checked":""}> Shifts crossing the cutoff count for BOTH morning &amp; night</label>
+  </div>
+  <div class="panel"><h3>2 · Store hours</h3>
+    <table>${DAYS.map(d=>`<tr><td>${DAY_LABEL[d]}</td><td><input style="width:80px" id="oh_${d}_o" value="${c.storeHours[d].open}"></td><td><input style="width:80px" id="oh_${d}_c" value="${c.storeHours[d].close}"></td></tr>`).join("")}</table>
+  </div>
+  <div class="panel"><h3>3 · Meal break rules</h3>
+    <label class="fld">Min shift duration for meal break (hrs) <input id="mbMin" type="number" step="0.5" value="${c.mealBreakRules.minShiftDuration}"></label><br>
+    <label class="fld">Break duration (min) <input id="mbDur" type="number" value="${c.mealBreakRules.breakDuration}"></label>
+    <h3 style="margin-top:10px">Blackout hours (no breaks)</h3>
+    <div id="blackoutList">${bo.map((b,i)=>`<div class="row" style="margin-bottom:6px"><input style="width:75px" id="bo_${i}_s" value="${b.start}"><span>→</span><input style="width:75px" id="bo_${i}_e" value="${b.end}"><input style="width:130px" id="bo_${i}_r" value="${b.reason}"><button class="btn small secondary" onclick="App.removeBlackout(${i})">✕</button></div>`).join("")}</div>
+    <button class="btn small secondary" onclick="App.addBlackout()">+ Add blackout</button>
+  </div>
+  <div class="panel"><h3>4 · Special days</h3>
+    <table><tr><th>Day</th><th>Extra early starters</th><th>Reason</th></tr>
+    ${DAYS.map(d=>{const s=c.specialDays[d];return `<tr><td>${DAY_LABEL[d]}</td><td><input style="width:60px" type="number" id="sd_${d}_n" value="${s?s.extraEarlyStarters:0}"></td><td><input id="sd_${d}_r" value="${s?s.reason:""}"></td></tr>`;}).join("")}</table>
+  </div>
+  <div class="panel"><h3>5 · Busyness multipliers</h3>
+    <label class="fld">Day (9 AM–5 PM) <input id="bmDay" type="number" step="0.1" value="${c.busynessMultipliers.day}"></label><br>
+    <label class="fld">Night (5 PM–close) <input id="bmNight" type="number" step="0.1" value="${c.busynessMultipliers.night}"></label>
+  </div>
+  <div class="panel"><h3>6 · Payroll &amp; staffing bands</h3>
+    <label class="fld">Average hourly wage ($) <input id="pyWage" type="number" step="0.5" value="${c.payroll.averageHourlyWage}"></label><br>
+    <label class="fld">Red below (staff/hr) <input id="bandLow" type="number" value="${c.staffingBands.low}"></label><br>
+    <label class="fld">Green at/above (staff/hr) <input id="bandHigh" type="number" value="${c.staffingBands.high}"></label>
+  </div>`;
+};
+App.addBlackout=function(){ state.config.mealBreakRules.blackoutHours.push({start:"15:00",end:"16:00",reason:"Custom"}); App.renderSettings(); };
+App.removeBlackout=function(i){ App.collectSettings(); state.config.mealBreakRules.blackoutHours.splice(i,1); App.renderSettings(); };
+App.collectSettings=function(){
+  const c=state.config;
+  const v=id=>$(id)?$(id).value:null;
+  if(v("stMorning")==null) return;
+  c.shiftThresholds.morningCutoff=v("stMorning"); c.shiftThresholds.nightCutoff=v("stNight");
+  c.shiftThresholds.midShiftCounted=$("stMid").checked;
+  for(const d of DAYS){ c.storeHours[d]={open:v("oh_"+d+"_o"),close:v("oh_"+d+"_c")};
+    const n=+v("sd_"+d+"_n"); if(n>0) c.specialDays[d]={extraEarlyStarters:n,reason:v("sd_"+d+"_r")||"Special"}; else delete c.specialDays[d]; }
+  c.mealBreakRules.minShiftDuration=+v("mbMin"); c.mealBreakRules.breakDuration=+v("mbDur");
+  c.mealBreakRules.blackoutHours=c.mealBreakRules.blackoutHours.map((b,i)=>({start:v("bo_"+i+"_s")||b.start,end:v("bo_"+i+"_e")||b.end,reason:v("bo_"+i+"_r")||b.reason}));
+  c.busynessMultipliers={day:+v("bmDay"),night:+v("bmNight")};
+  c.payroll.averageHourlyWage=+v("pyWage");
+  c.staffingBands={low:+v("bandLow"),high:+v("bandHigh")};
+};
+App.saveSettings=function(){
+  App.collectSettings();
+  state.shifts.forEach(s=>{ if(!s.override) autoAssign(s,state.config); });
+  App.renderAll(); App.renderSettings();
+  App.toast("✓ Settings saved & breaks re-validated");
+};
+App.resetSettings=function(){ state.config=JSON.parse(JSON.stringify(DEFAULT_CONFIG)); App.renderSettings(); App.renderAll(); App.toast("Settings reset to defaults"); };
+
+/* ---------- schedule import ---------- */
+App.importScheduleFile=function(file){
+  const rd=new FileReader();
+  rd.onload=e=>{
+    try{
+      const wb=XLSX.read(e.target.result,{type:"array"});
+      const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false});
+      let imported=0, skipped=[];
+      const newShifts=[]; let nid=1;
+      for(const row of rows){
+        if(!row||!row[0]) continue;
+        const name=String(row[0]).trim();
+        if(/^name$/i.test(name)) continue;
+        DAYS.forEach((d,i)=>{
+          const cell=row[i+1];
+          if(cell==null||String(cell).trim()===""||/^off$/i.test(String(cell).trim())) return;
+          const p=parseShiftText(cell,d,state.config);
+          if(p){ newShifts.push({id:nid++,employee:name,day:d,start:p.start,end:p.end,breakStart:null}); imported++; }
+          else skipped.push(name+" "+DAY_LABEL[d]+' "'+cell+'"');
+        });
+      }
+      if(!imported){ App.toast("⚠️ No shifts parsed. Expected: Name, Sun…Sat with times like 9-4."); return; }
+      state.shifts=newShifts; state.nextId=nid;
+      state.shifts.forEach(s=>autoAssign(s,state.config));
+      App.renderAll(); App.switchTab("schedule");
+      App.toast("✓ Imported "+imported+" shifts"+(skipped.length?" · ⚠️ skipped "+skipped.length+" unparseable: "+skipped.slice(0,3).join("; "):""));
+    }catch(err){ App.toast("⚠️ Could not read file: "+err.message); }
+  };
+  rd.readAsArrayBuffer(file);
+};
+App.downloadScheduleTemplate=function(){
+  const data=[["Name","Sun","Mon","Tue","Wed","Thu","Fri","Sat"],...SAMPLE_ROSTER];
+  const ws=XLSX.utils.aoa_to_sheet(data); const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"Schedule");
+  XLSX.writeFile(wb,"schedule_template.xlsx");
+};
+
+/* ---------- sales import (PDF/CSV) ---------- */
+App.importSalesFiles=async function(files){
+  const status=$("salesImportStatus");
+  const dayResults=[];
+  for(const f of files){
+    try{
+      if(/\.csv$/i.test(f.name)) dayResults.push(...await App.parseSalesCSV(f));
+      else if(/\.pdf$/i.test(f.name)) dayResults.push(await App.parseSalesPDF(f));
+    }catch(err){ status.innerHTML+="<div class='alert-item warn'>⚠️ "+f.name+": "+err.message+"</div>"; }
+  }
+  const valid=dayResults.filter(Boolean);
+  if(!valid.length){ status.innerHTML+="<div class='alert-item crit'>🔴 No sales data parsed. Try the CSV format: date,time_block,revenue,guests</div>"; return; }
+  valid.sort((a,b)=>a.date.localeCompare(b.date));
+  // validation
+  const problems=[];
+  for(const d of valid){ if(d.total<=0) problems.push(d.date+": non-positive total"); for(const h in d.hourly) if(d.hourly[h]<0) problems.push(d.date+" "+h+":00 negative revenue"); }
+  const dates=valid.map(d=>d.date); if(new Set(dates).size!==dates.length) problems.push("Overlapping/duplicate dates detected");
+  state.sales={label:dates[0]+" → "+dates[dates.length-1], days:valid.map(d=>({...d, day: DAYS[new Date(d.date+"T12:00:00").getDay()]}))};
+  state.weekLabel="Week of "+dates[0]+" → "+dates[dates.length-1];
+  persist();
+  status.innerHTML="<div class='alert-item ok'>✓ Loaded "+valid.length+" day(s): "+dates.join(", ")+". Set as forecasting baseline.</div>"+
+    (problems.length?"<div class='alert-item warn'>⚠️ "+problems.join("<br>")+"</div>":"");
+  App.renderAll();
+};
+App.parseSalesCSV=function(file){
+  return new Promise((res,rej)=>{
+    const rd=new FileReader();
+    rd.onload=e=>{
+      const lines=String(e.target.result).split(/\r?\n/).filter(l=>l.trim());
+      const byDate={};
+      for(const line of lines){
+        const c=line.split(",").map(x=>x.trim());
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(c[0])) continue;
+        const [date,block,rev,guests]=c;
+        const hm=block.match(/^(\d{1,2}):?(\d{2})?/); if(!hm) continue;
+        const h=+hm[1];
+        byDate[date]=byDate[date]||{date,hourly:{},total:0,guests:0};
+        byDate[date].hourly[h]=(byDate[date].hourly[h]||0)+(+rev||0);
+        byDate[date].total+=(+rev||0); byDate[date].guests+=(+guests||0);
+      }
+      const days=Object.values(byDate);
+      days.length? res(days) : rej(new Error("no rows matched date,time_block,revenue,guests"));
+    };
+    rd.onerror=()=>rej(new Error("read failed"));
+    rd.readAsText(file);
+  });
+};
+App.parseSalesPDF=async function(file){
+  if(!window.pdfjsLib) throw new Error("PDF library failed to load (offline?). Use CSV.");
+  pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const buf=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  let text="";
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p);
+    const tc=await page.getTextContent();
+    text+=tc.items.map(i=>i.str).join(" ")+"\n";
+  }
+  // date from header
+  const dm=text.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  const date=dm? dm[3]+"-"+dm[1]+"-"+dm[2] : null;
+  if(!date) throw new Error("no date found in PDF header");
+  // rows: "11:00 AM - 11:30 AM ... $245.67"
+  const rowRe=/(\d{1,2}):(\d{2})\s*(AM|PM)\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)[^$\n]*?(\d[\d,]*)\s*%?[^$\n]*?\$\s*([\d,]+(?:\.\d{2})?)/gi;
+  const hourly={}; let total=0, guests=0, m;
+  while((m=rowRe.exec(text))!==null){
+    let h=+m[1]%12; if(m[3].toUpperCase()==="PM") h+=12;
+    const rev=parseFloat(m[5].replace(/,/g,""));
+    const g=parseInt(m[4].replace(/,/g,""))||0;
+    if(!isFinite(rev)) continue;
+    hourly[h]=(hourly[h]||0)+rev; total+=rev; guests+=g;
+  }
+  if(total<=0) throw new Error("no sales rows recognized — export the report as CSV instead");
+  return {date,hourly,total,guests};
+};
+
+/* ---------- exports ---------- */
+App.exportCSV=function(){
+  const bd=state.config.mealBreakRules.breakDuration;
+  let csv="employee_name,day,start_time,end_time,break_start,break_end,hours,meal_break_required,status\n";
+  for(const s of state.shifts){
+    const st=shiftStatus(s,state.config);
+    const bs=s.breakStart?fmt12(toMin(s.breakStart)):"", be=s.breakStart?fmt12(toMin(s.breakStart)+bd):"";
+    csv+=[s.employee,DAY_LABEL[s.day],fmt12(toMin(s.start)),fmt12(toMin(s.end)),bs,be,durH(s).toFixed(2),requiresBreak(s,state.config),st.level==="crit"?"CONFLICT":"approved"].join(",")+"\n";
+  }
+  App.download("schedule_export.csv",csv,"text/csv");
+};
+App.exportConfig=function(){
+  App.download("panda2355_config.json",JSON.stringify({...state.config,created:new Date().toISOString()},null,2),"application/json");
+};
+App.importConfigFile=function(file){
+  const rd=new FileReader();
+  rd.onload=e=>{
+    try{
+      const c=JSON.parse(e.target.result);
+      if(!c.mealBreakRules||!c.storeHours) throw new Error("not a valid config");
+      state.config={...JSON.parse(JSON.stringify(DEFAULT_CONFIG)),...c};
+      state.shifts.forEach(s=>{ if(!s.override) autoAssign(s,state.config); });
+      App.renderAll(); App.renderSettings();
+      App.toast("✓ Config imported: "+(c.name||file.name));
+    }catch(err){ App.toast("⚠️ Config import failed: "+err.message); }
+  };
+  rd.readAsText(file);
+};
+App.download=function(name,content,mime){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([content],{type:mime}));
+  a.download=name; a.click(); URL.revokeObjectURL(a.href);
+};
+App.printSchedule=function(){
+  const {crit}=App.conflictLists();
+  if(crit.length && !confirm(crit.length+" critical conflict(s) unresolved. Print anyway?")) return;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("print-me"));
+  $("tab-schedule").classList.add("print-me");
+  window.print();
+};
+App.printConflicts=function(){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("print-me"));
+  $("tab-breaks").classList.add("print-me");
+  App.renderBreaksTab();
+  window.print();
+};
+App.loadSampleData=function(confirmIt){
+  if(confirmIt && !confirm("Replace current schedule & sales with sample data?")) return;
+  loadSample(); state.forecast=null; state.proposal=null;
+  App.renderAll(); App.toast("✓ Sample data loaded");
+};
+
+/* ---------- wiring & init ---------- */
+function wireDrop(dropId, inputId, handler){
+  const d=$(dropId), inp=$(inputId);
+  d.onclick=()=>inp.click();
+  inp.onchange=()=>{ handler([...inp.files]); inp.value=""; };
+  d.ondragover=e=>{e.preventDefault(); d.classList.add("over");};
+  d.ondragleave=()=>d.classList.remove("over");
+  d.ondrop=e=>{e.preventDefault(); d.classList.remove("over"); handler([...e.dataTransfer.files]);};
+}
+document.addEventListener("DOMContentLoaded",()=>{
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>App.switchTab(b.dataset.tab));
+  wireDrop("dropSchedule","fileSchedule",fs=>fs[0]&&App.importScheduleFile(fs[0]));
+  wireDrop("dropSales","fileSales",fs=>App.importSalesFiles(fs));
+  wireDrop("dropConfig","fileConfig",fs=>fs[0]&&App.importConfigFile(fs[0]));
+  if(!restore()) loadSample();
+  App.renderAll();
+  App.renderSettings();
+});
+</script>
+</body>
+</html>
