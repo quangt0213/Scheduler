@@ -14,6 +14,14 @@ A single-file web app for restaurant shift scheduling, meal break compliance, an
 
 Everything persists in your browser (localStorage). "Reset to sample data" restores the demo roster and sales week.
 
+## Labor Model (Day-part export)
+
+Import Panda's day-part "Export" sheet (30-min slots × 7 days, with Net Sales / Actual / Scheduled / Min / Rcmd) and every headcount target in the app switches from a rough heuristic to real data.
+
+Two modes, switchable in the Sales & Forecast tab:
+- **Smoothed by sales intensity** (default): an isotonic regression is fitted to all (sales, Rcmd) pairs, producing a headcount curve that never decreases as sales rise. This is what resolves the day-part inconsistency where high-sales non-rush slots weren't classified yet.
+- **Panda Rcmd** (raw): uses the Rcmd value for each slot exactly as provided.
+
 ## Import formats
 
 **Schedule (.xlsx / .csv):** first column employee name, then Sun–Sat columns with shifts like `9-4`, `3:30-10:30`, `7:30-3`, or `off`. AM/PM is inferred from store hours. Unparseable cells are skipped and reported.
