@@ -46,6 +46,13 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05
 .scroll-x table th:first-child,.scroll-x table td:first-child{position:sticky;left:0;background:var(--panel);z-index:2}
 .scroll-x table th:first-child{z-index:3}
 .heat td{text-align:center;font-family:var(--mono);font-size:12px;cursor:default}
+.heat th{text-align:center}
+.heat th:last-child,.heat td:last-child{text-align:center}
+.heat tr.rush td{background-image:linear-gradient(rgba(255,107,74,.09),rgba(255,107,74,.09))}
+.heat tr.rush td:first-child{border-left:3px solid var(--accent2);font-weight:700;color:var(--accent2)}
+.heat tr.rush-start td{border-top:1px solid rgba(255,107,74,.5)}
+.heat tr.rush-end td{border-bottom:1px solid rgba(255,107,74,.5)}
+.rush-tag{font-size:9px;letter-spacing:.04em;color:var(--accent2);display:block;font-weight:700}
 .cell-g{background:rgba(62,207,142,.16);color:var(--green)}
 .cell-y{background:rgba(245,196,81,.14);color:var(--yellow)}
 .cell-r{background:rgba(255,90,90,.16);color:var(--red)}
@@ -152,7 +159,7 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
 <body>
 <header>
   <h1>🐼 Panda <span>#2355</span> — Schedule & Labor</h1>
-  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v3 · 5th-hr rule</span>
+  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v5 · labor model</span>
   <span class="week-label" id="weekLabel"></span>
   <nav id="nav">
     <button data-tab="schedule" class="active">Schedule</button>
@@ -173,11 +180,11 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
     <div class="row between">
       <h2>Hourly Coverage Heat Map</h2>
       <div class="legend">
-        <span><span class="sw" style="background:rgba(62,207,142,.5)"></span>Meets demand</span>
-        <span><span class="sw" style="background:rgba(245,196,81,.5)"></span>1 short of demand</span>
-        <span><span class="sw" style="background:rgba(255,90,90,.5)"></span>2+ short (risk)</span>
-        <span><span class="sw" style="background:rgba(90,167,255,.5)"></span>Over-staffed (flex)</span>
+        <span><span class="sw" style="background:rgba(62,207,142,.5)"></span>Matches demand</span>
+        <span><span class="sw" style="background:rgba(245,196,81,.5)"></span>1 off target</span>
+        <span><span class="sw" style="background:rgba(255,90,90,.5)"></span>2+ off — short <b>or</b> over-staffed</span>
         <span><span class="sw" style="background:rgba(90,167,255,.2)"></span>Prep / closing crew</span>
+        <span><span class="sw" style="background:rgba(255,107,74,.35)"></span>Rush hour</span>
       </div>
     </div>
     <div class="scroll-x"><table class="heat" id="heatMap"></table></div>
@@ -221,6 +228,10 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
   <div class="grid c2" style="margin-top:16px">
     <div class="panel"><h2>Daily Revenue — Baseline Week</h2><div class="chart-box"><canvas id="dailyChart"></canvas></div></div>
     <div class="panel"><h2>Hourly Sales Distribution</h2><div class="chart-box"><canvas id="hourlyChart"></canvas></div></div>
+  </div>
+  <div class="panel">
+    <h2>Labor Model — Sales Intensity → Headcount</h2>
+    <div id="laborPanel"></div>
   </div>
   <div class="panel">
     <h2>Forecast Scenario Builder</h2>
@@ -289,6 +300,12 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
         <button class="btn small secondary" onclick="App.downloadScheduleTemplate()">Download template</button>
         <button class="btn small secondary" onclick="App.loadSampleData(true)">Reset to sample data</button>
       </div>
+    </div>
+    <div class="panel">
+      <h2>Import Labor Model (Day-Part Export)</h2>
+      <p class="muted">Panda "Export" sheet: 30-min slots with Net Sales, Actual, Scheduled, Min and <b>Rcmd</b> per day. Drives all headcount targets.</p>
+      <div class="drop" id="dropLabor">🎯 Drop day-part .xlsx here or click to browse</div>
+      <input type="file" id="fileLabor" accept=".xlsx,.xls,.csv" hidden>
     </div>
     <div class="panel">
       <h2>Import Sales Reports (PDF / CSV)</h2>
@@ -367,6 +384,7 @@ const DEFAULT_CONFIG = {
     minShiftDuration: 6.0,
     breakDuration: 30,
     maxHoursBeforeBreak: 5,   // break must be completed before this many hours worked (CA 5th-hour rule)
+    staggerBreaks: true,      // no two employees on meal break at the same time
     blackoutHours: [
       {start:"12:00", end:"14:00", reason:"Lunch rush"},
       {start:"17:00", end:"20:00", reason:"Dinner rush"}
@@ -375,13 +393,85 @@ const DEFAULT_CONFIG = {
   specialDays: { wed:{extraEarlyStarters:2,reason:"Delivery day"}, sat:{extraEarlyStarters:2,reason:"Weekend prep"} },
   busynessMultipliers: { day:1.0, night:1.5 },
   payroll: { averageHourlyWage: 18.00 },
-  staffingBands: { low:3, high:5 } // <low = red, >=high = green
+  staffingBands: { low:3, high:5 }, // fallback only, when no labor model is loaded
+  laborMode: "curve"   // "curve" = smoothed by sales intensity · "rcmd" = Panda's raw Rcmd per slot
 };
+
+/* ---------- labor model: sales intensity → headcount ----------
+   Derived from Panda's "Rcmd" column by isotonic regression, so headcount is
+   strictly non-decreasing as sales rise. This removes the daypart inconsistency
+   where an Afternoon slot and an Evening slot with the same sales got
+   different recommended headcounts. Values are $ per 30-minute slot. */
+const DEFAULT_LABOR_CURVE = [
+  {minSales:0,   staff:3},
+  {minSales:86,  staff:4},
+  {minSales:188, staff:5},
+  {minSales:263, staff:6},
+  {minSales:347, staff:7},
+  {minSales:629, staff:8}
+];
+
+function staffForSales(sales30, curve){
+  const c = (curve && curve.length) ? curve : DEFAULT_LABOR_CURVE;
+  let v = c[0].staff;
+  for(const b of c) if(sales30 >= b.minSales) v = b.staff;
+  return v;
+}
+
+// Pool-Adjacent-Violators: fit a non-decreasing staff-vs-sales step function
+function buildLaborCurve(recs){
+  if(!recs || recs.length < 10) return DEFAULT_LABOR_CURVE.slice();
+  const pts=[...recs].sort((a,b)=>a.s-b.s);
+  let bl=pts.map(p=>({sum:p.r, n:1, lo:p.s}));
+  let merged=true;
+  while(merged){
+    merged=false;
+    for(let i=0;i<bl.length-1;i++){
+      if(bl[i].sum/bl[i].n > bl[i+1].sum/bl[i+1].n){
+        bl[i]={sum:bl[i].sum+bl[i+1].sum, n:bl[i].n+bl[i+1].n, lo:bl[i].lo};
+        bl.splice(i+1,1); merged=true; break;
+      }
+    }
+  }
+  const base=Math.max(1,Math.round(bl[0].sum/bl[0].n));
+  const out=[{minSales:0, staff:base}];
+  for(let k=base+1;k<=12;k++){
+    const b=bl.find(x=>Math.round(x.sum/x.n)>=k);
+    if(b && b.lo>0) out.push({minSales:Math.round(b.lo), staff:k});
+  }
+  return out;
+}
+
+// $ sold in the 30-min slot starting at t, averaged if we only have hourly data
+function slotSales(day, t){
+  const L=state.labor;
+  if(L && L.days[day] && L.days[day][t] && L.days[day][t].sales!=null) return L.days[day][t].sales;
+  const sd=state.sales && state.sales.days.find(x=>x.day===day);
+  if(sd && sd.hourly){ const h=Math.floor(t/60); if(sd.hourly[h]!=null) return sd.hourly[h]/2; }
+  return null;
+}
+
+// recommended headcount for a day + 30-min slot
+function recommendedStaff(day, t, cfg, salesOverride){
+  const L=state.labor;
+  const slot = L && L.days[day] ? L.days[day][t] : null;
+  if(cfg.laborMode==="rcmd" && salesOverride==null && slot && slot.rcmd!=null) return slot.rcmd;
+  const sales = salesOverride!=null ? salesOverride : slotSales(day,t);
+  if(sales!=null && L){
+    let v=staffForSales(sales, L.curve);
+    if(slot && slot.min!=null) v=Math.max(v, slot.min);   // never below Panda's Min
+    return v;
+  }
+  if(slot && slot.rcmd!=null) return slot.rcmd;
+  if(sales!=null) return staffForSales(sales, L?L.curve:null);
+  return null;
+}
 
 let state = {
   config: JSON.parse(JSON.stringify(DEFAULT_CONFIG)),
   shifts: [],           // {id, employee, day, start, end, breakStart|null, override:false}
   sales: null,          // {label, days:[{day,date,total,hourly:{[h]:revenue}}], guests}
+  labor: null,          // {days:{day:{slotMin:{sales,actual,sched,ns,min,rcmd,dp}}}, dayparts:{}, curve:[], n}
   forecast: null,       // output of runForecast
   proposal: null,       // proposed staffing changes
   nextId: 1,
@@ -432,19 +522,32 @@ function blackoutsMin(cfg){ return cfg.mealBreakRules.blackoutHours.map(b=>({s:t
 
 function requiresBreak(shift, cfg){ return durH(shift) > cfg.mealBreakRules.minShiftDuration; }
 
+// breaks already taken by OTHER shifts on the same day (for stagger rule)
+function occupiedBreaks(cfg, day, excludeId){
+  if(!day || cfg.mealBreakRules.staggerBreaks===false) return [];
+  const bd=cfg.mealBreakRules.breakDuration;
+  return state.shifts
+    .filter(s=>s.day===day && s.id!==excludeId && s.breakStart!=null)
+    .map(s=>({s:toMin(s.breakStart), e:toMin(s.breakStart)+bd}));
+}
+
 // Returns list of candidate windows {s,e,priority} sorted best-first
-function validBreakWindows(shift, cfg){
+// `busy` overrides the auto-computed stagger conflicts (pass [] to ignore them)
+function validBreakWindows(shift, cfg, busy){
   const bd = cfg.mealBreakRules.breakDuration;
   const S = toMin(shift.start), E = toMin(shift.end);
   const bos = blackoutsMin(cfg);
   // 5th-hour rule: the 30-min break must be completed before this many hours of work
   const deadline = S + (cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
+  const taken = busy || occupiedBreaks(cfg, shift.day, shift.id);
   const wins = [];
   // break starts snap to the clock: :00 or :30 only (e.g. 4:00, 4:30 — never 3:45)
   for(let t=Math.ceil(S/30)*30; t+bd<=E; t+=30){
     if(t+bd > deadline) break;             // too late — past the 5th hour of work
     const clash = bos.some(b => t < b.e && t+bd > b.s);
     if(clash) continue;
+    // stagger rule: nobody else may be on break at the same time
+    if(taken.some(o => t < o.e && t+bd > o.s)) continue;
     const mid = t > S+60 && t+bd < E-60;   // prefer not first/last hour
     wins.push({s:t, e:t+bd, priority: mid?2:1});
   }
@@ -473,16 +576,26 @@ function displayWindows(shift, cfg){
 
 function shiftStatus(shift, cfg){
   if(!requiresBreak(shift,cfg)) return {code:"no_break_needed", label:"≤"+cfg.mealBreakRules.minShiftDuration+"h — 10-min breaks only", level:"ok"};
-  const wins = validBreakWindows(shift,cfg);
-  if(!wins.length) return {code:"no_valid_break_window", label:"No valid break window", level:"crit"};
   if(shift.breakStart!=null){
     const bs=toMin(shift.breakStart), bd=cfg.mealBreakRules.breakDuration;
     const deadline=toMin(shift.start)+(cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
     const inBlackout = blackoutsMin(cfg).some(b=> bs < b.e && bs+bd > b.s);
     const inShift = bs>=toMin(shift.start) && bs+bd<=toMin(shift.end);
     if(bs+bd > deadline) return {code:"invalid_assignment", label:"Break past the "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th hour of work", level:"crit"};
+    const clash = occupiedBreaks(cfg, shift.day, shift.id).find(o=> bs < o.e && bs+bd > o.s);
+    if(clash){
+      const who = state.shifts.find(x=>x.day===shift.day && x.id!==shift.id && x.breakStart!=null && toMin(x.breakStart)===clash.s);
+      return {code:"break_collision", label:"Same break time as "+(who?who.employee:"another employee"), level:"crit"};
+    }
     if(!inBlackout && inShift) return {code:"scheduled", label:"Break "+fmt12r(bs,bs+bd), level:"ok"};
     return {code:"invalid_assignment", label:"Assigned break now invalid", level:"crit"};
+  }
+  const wins = validBreakWindows(shift,cfg);
+  if(!wins.length){
+    // distinguish "physically impossible" from "every slot already taken by a coworker"
+    return validBreakWindows(shift,cfg,[]).length
+      ? {code:"no_free_slot", label:"All valid slots taken by coworkers", level:"crit"}
+      : {code:"no_valid_break_window", label:"No valid break window", level:"crit"};
   }
   const distinctBlocks = new Set(wins.map(w=>Math.floor(w.s/60))).size;
   if(distinctBlocks<=1) return {code:"single_window", label:"Unassigned — only one narrow window", level:"warn"};
@@ -494,6 +607,51 @@ function autoAssign(shift, cfg){
   const wins = validBreakWindows(shift,cfg);
   shift.breakStart = wins.length ? toHM(wins[0].s) : null;
 }
+
+/* Assign every break on one day so that no two overlap.
+   Modelled as bipartite matching (shift → 30-min slot) solved with augmenting
+   paths, so we find the MAXIMUM number of assignable breaks rather than
+   letting a greedy pass strand someone. */
+function assignBreaksForDay(day, cfg){
+  const bd=cfg.mealBreakRules.breakDuration;
+  const dayShifts=state.shifts.filter(s=>s.day===day);
+  // manager-locked breaks stay put and block their slot
+  const locked=dayShifts.filter(s=>s.override && s.breakStart!=null && requiresBreak(s,cfg))
+                        .map(s=>({s:toMin(s.breakStart), e:toMin(s.breakStart)+bd}));
+  const need=dayShifts.filter(s=>requiresBreak(s,cfg) && !s.override);
+  need.forEach(s=>s.breakStart=null);
+
+  // candidate slots per shift, best-first, ignoring other auto-assignments
+  const cands=need.map(s=>validBreakWindows(s,cfg,locked).map(w=>w.s));
+  // solve most-constrained shifts first
+  const order=need.map((_,i)=>i).sort((a,b)=>cands[a].length-cands[b].length);
+
+  // Kuhn's augmenting-path matching: slot -> shift index
+  const slotOf=new Map();
+  function tryAssign(i, seen){
+    for(const t of cands[i]){                 // candidates are best-slot-first
+      if(seen.has(t)) continue;
+      seen.add(t);
+      const owner=slotOf.get(t);
+      if(owner===undefined || tryAssign(owner, seen)){ slotOf.set(t,i); return true; }
+    }
+    return false;
+  }
+  for(const i of order) tryAssign(i, new Set());
+
+  for(const [t,i] of slotOf) need[i].breakStart=toHM(t);
+  // if breakDuration > 30 two different slots can still overlap — drop the later one
+  if(bd>30){
+    const placed=need.filter(s=>s.breakStart!=null).sort((a,b)=>toMin(a.breakStart)-toMin(b.breakStart));
+    let lastEnd=-1;
+    for(const s of placed){
+      const bs=toMin(s.breakStart);
+      if(bs<lastEnd) s.breakStart=null; else lastEnd=bs+bd;
+    }
+  }
+}
+
+function autoAssignAllDays(cfg){ for(const d of DAYS) assignBreaksForDay(d,cfg); }
 
 /* ---------- coverage ---------- */
 function staffAt(day, hourMin){
@@ -562,14 +720,14 @@ function loadSample(){
       if(parsed) state.shifts.push({id:state.nextId++, employee:name, day:d, start:parsed.start, end:parsed.end, breakStart:null});
     });
   });
-  state.shifts.forEach(s=>autoAssign(s,state.config));
+  autoAssignAllDays(state.config);
   state.sales = buildSampleSales();
 }
 
 /* ---------- persistence ---------- */
-const LS_KEY="panda2355_v3";
+const LS_KEY="panda2355_v5";
 function persist(){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify({config:state.config, shifts:state.shifts, sales:state.sales, nextId:state.nextId, weekLabel:state.weekLabel})); }catch(e){}
+  try{ localStorage.setItem(LS_KEY, JSON.stringify({config:state.config, shifts:state.shifts, sales:state.sales, labor:state.labor, nextId:state.nextId, weekLabel:state.weekLabel})); }catch(e){}
 }
 function restore(){
   try{
@@ -577,7 +735,7 @@ function restore(){
     const d=JSON.parse(raw);
     if(!d.shifts||!d.shifts.length) return false;
     state.config={...JSON.parse(JSON.stringify(DEFAULT_CONFIG)),...d.config};
-    state.shifts=d.shifts; state.sales=d.sales; state.nextId=d.nextId||1000; state.weekLabel=d.weekLabel||state.weekLabel;
+    state.shifts=d.shifts; state.sales=d.sales; state.labor=d.labor||null; state.nextId=d.nextId||1000; state.weekLabel=d.weekLabel||state.weekLabel;
     return true;
   }catch(e){ return false; }
 }
@@ -639,9 +797,12 @@ App.renderSummaryCards = function(){
 };
 
 /* ---------- heat map (demand-based coloring) ---------- */
-// target staff for a slot, scaled from that day's sales intensity
+// target staff for a slot — uses the Panda labor model when loaded
 App.targetStaff = function(day, t){
   const cfg=state.config;
+  const r=recommendedStaff(day,t,cfg);
+  if(r!=null) return r;
+  // fallback when neither labor model nor sales data is loaded
   const sd=state.sales?.days.find(x=>x.day===day);
   const H=sd?sd.hourly:App.hourlySalesAvg();
   const vals=Object.values(H);
@@ -650,38 +811,54 @@ App.targetStaff = function(day, t){
   const inten=(H[Math.floor(t/60)]||0)/max;
   return Math.max(1, Math.round(inten*cfg.staffingBands.high));
 };
+App.daypartAt = function(t){ return state.labor?.dayparts?.[t] || ""; };
 
+// symmetric: over-staffing is treated as seriously as under-staffing
 App.cellClass = function(n, day, t){
   const open=toMin(state.config.storeHours[day].open), close=toMin(state.config.storeHours[day].close);
   if(t<open || t>=close) return n>0 ? "cell-p" : "cell-off";  // prep before open / closing crew after close
-  const target=App.targetStaff(day,t);
-  const diff=n-target;
-  if(diff<=-2) return "cell-r";
-  if(diff===-1) return "cell-y";
-  if(diff>=3) return "cell-b";
+  const diff=n-App.targetStaff(day,t);
+  if(Math.abs(diff)>=2) return "cell-r";   // 2+ short OR 2+ over → red
+  if(Math.abs(diff)===1) return "cell-y";
   return "cell-g";
+};
+App.rushAt = function(t){
+  return state.config.mealBreakRules.blackoutHours.find(b=> t>=toMin(b.start) && t<toMin(b.end));
 };
 
 App.renderHeatMap = function(){
   const hrs = hoursRange();
   const salesByHour = App.hourlySalesAvg();
   const maxSales = Math.max(1,...Object.values(salesByHour),1);
-  let html = "<tr><th>Time</th>"+DAYS.map(d=>"<th>"+DAY_LABEL[d]+"</th>").join("")+"<th>Sales intensity</th></tr>";
+  const hasLabor=!!state.labor;
+  let html = "<tr><th>Time</th>"+(hasLabor?"<th>Day part</th>":"")+DAYS.map(d=>"<th>"+DAY_LABEL[d]+"</th>").join("")+"<th>Sales intensity</th></tr>";
   for(const t of hrs){
     const pct = (salesByHour[Math.floor(t/60)]||0)/maxSales;
     const dots = "●".repeat(Math.max(0,Math.round(pct*7)))||"·";
-    html += "<tr><td class='mono'>"+fmt12(t)+"</td>";
+    const rush = App.rushAt(t);
+    let cls="";
+    if(rush){
+      cls=" class='rush"+(t===toMin(rush.start)?" rush-start":"")+(t+30>=toMin(rush.end)?" rush-end":"")+"'";
+    }
+    const tag = rush && t===toMin(rush.start) ? "<span class='rush-tag'>"+rush.reason.toUpperCase()+"</span>" : "";
+    html += "<tr"+cls+"><td class='mono'>"+fmt12(t)+tag+"</td>";
+    if(hasLabor) html += "<td class='muted' style='font-size:11px'>"+App.daypartAt(t)+"</td>";
     for(const d of DAYS){
       const open=toMin(state.config.storeHours[d].open);
-      const visible = t < schedClose(d);
-      const n = visible? staffAt(d,t) : 0;
-      if(!visible && t>=schedClose(d)){ html+="<td class='cell-off'>–</td>"; continue; }
+      if(t>=schedClose(d)){ html+="<td class='cell-off'>–</td>"; continue; }
+      const n = staffAt(d,t);
       const target=App.targetStaff(d,t);
       const inStore=t>=open&&t<toMin(state.config.storeHours[d].close);
+      const diff=n-target;
+      const sl=slotSales(d,t);
+      const note = inStore
+        ? " / rec "+target+(diff>=2?" — OVER by "+diff:diff<=-2?" — SHORT by "+(-diff):diff===0?" — on target":diff===1?" — 1 over":" — 1 short")
+          +(sl!=null?" · "+money(sl)+" sales":"")
+        : (t<open?" (prep)":" (closing)");
       const show = (n===0 && t<open) ? "–" : n;
-      html += "<td class='"+App.cellClass(n,d,t)+"' title='"+DAY_LABEL[d]+" "+fmt12(t)+": "+n+" staff"+(inStore?" / demand "+target:t<open?" (prep)":" (closing)")+"'>"+show+"</td>";
+      html += "<td class='"+App.cellClass(n,d,t)+"' title='"+DAY_LABEL[d]+" "+fmt12(t)+": "+n+" staff"+note+(rush?" · "+rush.reason:"")+"'>"+show+"</td>";
     }
-    html += "<td class='muted mono' style='text-align:left'>"+dots+"</td></tr>";
+    html += "<td class='muted mono'>"+dots+"</td></tr>";
   }
   $("heatMap").innerHTML = html;
 };
@@ -761,8 +938,11 @@ App.deleteShift = function(){
   App.closeModal(); App.renderAll(); App.toast("Shift deleted");
 };
 App.autoAssignAll = function(){
-  state.shifts.forEach(s=>{ if(!s.override) autoAssign(s,state.config); });
-  App.renderAll(); App.toast("✓ Breaks auto-assigned to best valid windows");
+  autoAssignAllDays(state.config);
+  const unassigned=state.shifts.filter(s=>requiresBreak(s,state.config)&&s.breakStart==null&&!s.ack).length;
+  App.renderAll();
+  App.toast(unassigned? "✓ Breaks staggered — "+unassigned+" could not be placed (see conflicts)"
+                      : "✓ All breaks staggered — no two employees overlap");
 };
 
 /* ---------- breaks tab (day-based) ---------- */
@@ -848,7 +1028,11 @@ App.conflictLists = function(){
   for(const s of state.shifts){
     const st=shiftStatus(s,cfg);
     const d=durH(s);
-    if(st.level==="crit" && !s.ack) crit.push({s,msg:st.code==="no_valid_break_window"?"No valid break window — blackouts + "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th-hour rule leave no slot. ACTION: adjust shift start, split shift, or override.":"Assigned break violates current rules ("+st.label+"). ACTION: re-assign."});
+    if(st.level==="crit" && !s.ack) crit.push({s,msg:
+      st.code==="no_valid_break_window" ? "No valid break window — blackouts + "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th-hour rule leave no slot. ACTION: adjust shift start, split shift, or override."
+      : st.code==="break_collision" ? st.label+" — only one employee may be on meal break at a time. ACTION: re-assign one of them."
+      : st.code==="no_free_slot" ? "Every valid slot is already taken by a coworker (stagger rule). ACTION: move someone else's break, or adjust this shift."
+      : "Assigned break violates current rules ("+st.label+"). ACTION: re-assign."});
     else if(st.level==="warn") warn.push({s,msg:st.code==="single_window"?"Only one narrow break window available — verify acceptable.":"Break required but not yet assigned."});
     else if(!requiresBreak(s,cfg) && d>cfg.mealBreakRules.minShiftDuration-0.5) warn.push({s,msg:"Shift "+d.toFixed(1)+"h — close to "+cfg.mealBreakRules.minShiftDuration+"h threshold. Overtime would require a meal break."});
     else ok.push(s);
@@ -873,6 +1057,7 @@ App.renderSales = function(){
   const cfg=state.config;
   $("multDayLbl").textContent=cfg.busynessMultipliers.day;
   $("multNightLbl").textContent=cfg.busynessMultipliers.night;
+  App.renderLaborPanel();
   if(!state.sales){ $("salesCards").innerHTML="<div class='card'><h4>No sales data</h4><div class='sub'>Import PDFs/CSV in Import/Export tab.</div></div>"; return; }
   const days=state.sales.days;
   const total=days.reduce((a,d)=>a+d.total,0);
@@ -898,7 +1083,8 @@ App.renderSales = function(){
 
 /* ---------- forecast ---------- */
 App.runForecast = function(){
-  if(!state.sales){ App.toast("⚠️ Import sales data first."); return; }
+  if(state.labor) return App.runForecastLabor();
+  if(!state.sales){ App.toast("⚠️ Import sales or labor data first."); return; }
   const mode=$("fcMode").value, val=+$("fcValue").value, adj=+$("fcAdjust").value;
   const baseTotal=state.sales.days.reduce((a,d)=>a+d.total,0);
   const target=(mode==="growth"? baseTotal*(1+val/100) : val)*adj;
@@ -928,27 +1114,73 @@ App.runForecast = function(){
   persist();
 };
 
+/* Forecast driven by the labor model: scale each 30-min slot's sales, then read
+   headcount straight off the fitted sales-intensity curve. */
+App.runForecastLabor = function(){
+  const mode=$("fcMode").value, val=+$("fcValue").value, adj=+$("fcAdjust").value;
+  const cfg=state.config, L=state.labor;
+  let baseTotal=0;
+  for(const d in L.days) for(const t in L.days[d]) baseTotal += L.days[d][t].sales||0;
+  if(baseTotal<=0){ App.toast("⚠️ Labor model has no sales figures."); return; }
+  const target=(mode==="growth"? baseTotal*(1+val/100) : val)*adj;
+  const growth=target/baseTotal;
+
+  const slots=hoursRange();
+  const rows=slots.map(t=>{
+    let cur=0, rec=0, fcRev=0, days=0;
+    for(const d of DAYS){
+      if(t>=schedClose(d)) continue;
+      const open=toMin(cfg.storeHours[d].open);
+      if(t<open) continue;
+      const base=slotSales(d,t);
+      if(base==null) continue;
+      const f=base*growth;
+      cur+=staffAt(d,t);
+      rec+=recommendedStaff(d,t,cfg,f)||0;
+      fcRev+=f; days++;
+    }
+    if(!days) return null;
+    const current=Math.round(cur/days), recommended=Math.round(rec/days);
+    const gap=recommended-current;
+    return {h:t/60, t, current, recommended, gap, fcRev:fcRev/days,
+      loss: gap>0 ? gap*(fcRev/days)*0.12 : 0,
+      risk: gap>=2?"CRITICAL": gap===1?"UNDER": gap<=-2?"OVER":gap===-1?"OVER":"OK"};
+  }).filter(Boolean);
+
+  state.forecast={target, baseTotal, growth, rows, perSlot:true,
+    label:(mode==="growth"? "+"+val+"%":"target "+money(val))+(adj!==1?" with adjustment":"")+" · labor model"};
+  App.renderForecast();
+  persist();
+};
+
 App.renderForecast = function(){
   const f=state.forecast; if(!f) return;
   $("forecastPanel").style.display="";
   $("forecastTitle").textContent="Forecast Results: "+f.label+" → weekly target "+money(f.target)+" (baseline "+money(f.baseTotal)+")";
-  let html="<tr><th>Hour</th><th>Current avg</th><th>Recommended</th><th>Gap</th><th>Fcst $/hr (day avg)</th><th>Risk</th></tr>";
+  const per=f.perSlot?"30 min":"hr";
+  let html="<tr><th>Time</th>"+(f.perSlot?"<th>Day part</th>":"")+"<th>Current avg</th><th>Recommended</th><th>Gap</th><th>Fcst $/"+per+"</th><th>Risk</th></tr>";
   for(const r of f.rows){
-    html+="<tr><td class='mono'>"+fmt12(r.h*60)+"</td><td>"+r.current+"</td><td>"+r.recommended+"</td><td class='mono'>"+(r.gap>0?"+"+r.gap:r.gap)+"</td><td class='mono'>"+money(r.fcRev)+"</td>"+
-      "<td class='risk-"+r.risk+"'>"+(r.risk==="CRITICAL"?"🔴 CRITICAL "+(r.loss?"(−"+money(r.loss)+" at risk)":""):r.risk==="UNDER"?"🟡 UNDER "+(r.loss?"(−"+money(r.loss)+" at risk)":""):r.risk==="OVER"?"🔵 over-staffed":"✓ OK")+"</td></tr>";
+    const t=f.perSlot?r.t:r.h*60;
+    html+="<tr><td class='mono'>"+fmt12(t)+"</td>"+(f.perSlot?"<td class='muted' style='font-size:11px'>"+App.daypartAt(t)+"</td>":"")+
+      "<td>"+r.current+"</td><td>"+r.recommended+"</td><td class='mono'>"+(r.gap>0?"+"+r.gap:r.gap)+"</td><td class='mono'>"+money(r.fcRev)+"</td>"+
+      "<td class='risk-"+r.risk+"'>"+(r.risk==="CRITICAL"?"🔴 SHORT "+(r.loss?"(−"+money(r.loss)+" at risk)":""):r.risk==="UNDER"?"🟡 1 SHORT "+(r.loss?"(−"+money(r.loss)+" at risk)":""):r.risk==="OVER"?"🔴 OVER-STAFFED ("+(-r.gap)+" extra ≈ "+money((-r.gap)*state.config.payroll.averageHourlyWage*(f.perSlot?0.5:1))+"/day)":"✓ OK")+"</td></tr>";
   }
   $("forecastTable").innerHTML=html;
-  const gapHrs=f.rows.reduce((a,r)=>a+Math.max(0,r.gap),0);
+  const slotH=f.perSlot?0.5:1;                       // hours represented by one row
   const wage=state.config.payroll.averageHourlyWage;
-  const cost=gapHrs*wage*7, risk=f.rows.reduce((a,r)=>a+r.loss,0)*7;
+  const shortH=f.rows.reduce((a,r)=>a+Math.max(0,r.gap),0)*slotH;
+  const overH =f.rows.reduce((a,r)=>a+Math.max(0,-r.gap),0)*slotH;
+  const cost=shortH*wage*7, waste=overH*wage*7;
+  const risk=f.rows.reduce((a,r)=>a+r.loss,0)*7;
   const roi=cost>0?(risk/cost):0;
   $("forecastSummary").innerHTML=`
     <div class="grid c4">
-      <div class="card"><h4>Total gap</h4><div class="big">${gapHrs} hrs/day</div><div class="sub">${gapHrs*7} hrs/week</div></div>
-      <div class="card"><h4>Cost to fill</h4><div class="big">${money(cost)}/wk</div><div class="sub">${gapHrs*7} hrs × $${wage}/hr</div></div>
-      <div class="card"><h4>Revenue at risk</h4><div class="big">${money(risk)}/wk</div><div class="sub">if left understaffed</div></div>
-      <div class="card"><h4>ROI of filling gaps</h4><div class="big">${roi?roi.toFixed(1)+"×":"—"}</div><div class="sub">${roi>1?"✓ Recommended":"review"}</div></div>
+      <div class="card"><h4>Under-staffed</h4><div class="big">${shortH.toFixed(1)} hrs/day</div><div class="sub">${money(risk)}/wk revenue at risk</div></div>
+      <div class="card"><h4>Over-staffed</h4><div class="big" style="color:var(--red)">${overH.toFixed(1)} hrs/day</div><div class="sub">${money(waste)}/wk wasted labor</div></div>
+      <div class="card"><h4>Cost to fill gaps</h4><div class="big">${money(cost)}/wk</div><div class="sub">${(shortH*7).toFixed(1)} hrs × $${wage}/hr</div></div>
+      <div class="card"><h4>Net opportunity</h4><div class="big" style="color:${(waste+risk-cost)>0?"var(--green)":"var(--muted)"}">${money(waste+risk-cost)}/wk</div><div class="sub">trim over-staffing + protect revenue</div></div>
     </div>
+    ${overH>0?`<div class="alert-item crit" style="margin-top:10px">🔴<div><b>${money(waste)}/week is going to over-scheduled hours.</b> Re-deploying those hours into the ${shortH.toFixed(1)} short hours/day would cover the gaps at no extra payroll.</div></div>`:""}
     <p class="muted" style="margin-top:10px">Next: open <b>A/B Compare</b> → “Build proposal from forecast”.</p>`;
 };
 
@@ -1017,8 +1249,10 @@ App.buildProposal = function(){
   if(!state.forecast){ App.toast("⚠️ Run a forecast first."); return; }
   // proposal = per-day extra hours at gap hours
   const adds=[];
+  const step=state.forecast.perSlot?0.5:1;
   for(const r of state.forecast.rows) if(r.gap>0) adds.push({hour:r.h, people:r.gap});
-  state.proposal={adds, extraHoursPerDay: adds.reduce((a,x)=>a+x.people,0)};
+  state.proposal={adds, step, extraHoursPerDay: adds.reduce((a,x)=>a+x.people,0)*step,
+    trimHoursPerDay: state.forecast.rows.reduce((a,r)=>a+Math.max(0,-r.gap),0)*step};
   App.renderCompare(); persist();
   $("applyBtn").disabled=false;
 };
@@ -1029,8 +1263,9 @@ App.applyProposal = function(){
   const spans=[]; let cur=null;
   for(const a of state.proposal.adds.sort((x,y)=>x.hour-y.hour)){
     for(let i=0;i<a.people;i++){
+      const step=state.proposal.step||1;
       const sp=spans.find(s=>s.end===a.hour&&s.slot===i);
-      if(sp) sp.end=a.hour+1; else spans.push({start:a.hour,end:a.hour+1,slot:i});
+      if(sp) sp.end=a.hour+step; else spans.push({start:a.hour,end:a.hour+step,slot:i});
     }
   }
   let n=1;
@@ -1039,7 +1274,7 @@ App.applyProposal = function(){
       state.shifts.push({id:state.nextId++,employee:"Flex-"+(n++),day:d,start:toHM(sp.start*60),end:toHM(sp.end*60),breakStart:null});
     }
   }
-  state.shifts.forEach(s=>{ if(s.employee.startsWith("Flex-")) autoAssign(s,state.config); });
+  autoAssignAllDays(state.config);
   App.clearProposal();
   App.renderAll();
   App.toast("✓ Proposal applied — Flex cover shifts added for every day");
@@ -1107,6 +1342,7 @@ App.renderSettings = function(){
     <label class="fld">Min shift duration for meal break (hrs) <input id="mbMin" type="number" step="0.5" value="${c.mealBreakRules.minShiftDuration}"></label><br>
     <label class="fld">Break duration (min) <input id="mbDur" type="number" value="${c.mealBreakRules.breakDuration}"></label><br>
     <label class="fld">Break must be completed before hour of work (5th-hour rule) <input id="mbMax" type="number" step="0.5" value="${c.mealBreakRules.maxHoursBeforeBreak||5}"></label>
+    <label class="row" style="margin-top:8px;font-size:13px"><input type="checkbox" id="mbStagger" ${c.mealBreakRules.staggerBreaks!==false?"checked":""}> Stagger breaks — no two employees on meal break at the same time</label>
     <h3 style="margin-top:10px">Blackout hours (no breaks)</h3>
     <div id="blackoutList">${bo.map((b,i)=>`<div class="row" style="margin-bottom:6px"><input style="width:75px" id="bo_${i}_s" value="${b.start}"><span>→</span><input style="width:75px" id="bo_${i}_e" value="${b.end}"><input style="width:130px" id="bo_${i}_r" value="${b.reason}"><button class="btn small secondary" onclick="App.removeBlackout(${i})">✕</button></div>`).join("")}</div>
     <button class="btn small secondary" onclick="App.addBlackout()">+ Add blackout</button>
@@ -1138,6 +1374,7 @@ App.collectSettings=function(){
     const n=+v("sd_"+d+"_n"); if(n>0) c.specialDays[d]={extraEarlyStarters:n,reason:v("sd_"+d+"_r")||"Special"}; else delete c.specialDays[d]; }
   c.mealBreakRules.minShiftDuration=+v("mbMin"); c.mealBreakRules.breakDuration=+v("mbDur");
   c.mealBreakRules.maxHoursBeforeBreak=+v("mbMax")||5;
+  c.mealBreakRules.staggerBreaks=$("mbStagger").checked;
   c.mealBreakRules.blackoutHours=c.mealBreakRules.blackoutHours.map((b,i)=>({start:v("bo_"+i+"_s")||b.start,end:v("bo_"+i+"_e")||b.end,reason:v("bo_"+i+"_r")||b.reason}));
   c.busynessMultipliers={day:+v("bmDay"),night:+v("bmNight")};
   c.payroll.averageHourlyWage=+v("pyWage");
@@ -1145,7 +1382,7 @@ App.collectSettings=function(){
 };
 App.saveSettings=function(){
   App.collectSettings();
-  state.shifts.forEach(s=>{ if(!s.override) autoAssign(s,state.config); });
+  autoAssignAllDays(state.config);
   App.renderAll(); App.renderSettings();
   App.toast("✓ Settings saved & breaks re-validated");
 };
@@ -1174,13 +1411,110 @@ App.importScheduleFile=function(file){
       }
       if(!imported){ App.toast("⚠️ No shifts parsed. Expected: Name, Sun…Sat with times like 9-4."); return; }
       state.shifts=newShifts; state.nextId=nid;
-      state.shifts.forEach(s=>autoAssign(s,state.config));
+      autoAssignAllDays(state.config);
       App.renderAll(); App.switchTab("schedule");
       App.toast("✓ Imported "+imported+" shifts"+(skipped.length?" · ⚠️ skipped "+skipped.length+" unparseable: "+skipped.slice(0,3).join("; "):""));
     }catch(err){ App.toast("⚠️ Could not read file: "+err.message); }
   };
   rd.readAsArrayBuffer(file);
 };
+/* ---------- Panda labor model import ("Export" sheet, 30-min day-part data) ---------- */
+App.isLaborModelSheet=function(rows){
+  return rows.length>2 && String(rows[0]&&rows[0][0]).trim()==="DayOfWeekShort"
+      && (rows[1]||[]).some(c=>String(c).trim()==="Rcmd");
+};
+App.parseLaborModel=function(rows){
+  const MAP={Sun:"sun",Mon:"mon",Tue:"tue",Wed:"wed",Thu:"thu",Fri:"fri",Sat:"sat"};
+  const hdr=rows[0], sub=rows[1]||[];
+  // locate each day's 6-column block by finding its "Net Sales" start
+  const blocks=[];
+  for(let c=0;c<hdr.length;c++){
+    const d=MAP[String(hdr[c]).trim()];
+    if(d && String(sub[c]).trim()==="Net Sales") blocks.push({day:d, c});
+  }
+  if(!blocks.length) return null;
+  const days={}, dayparts={}, recs=[];
+  for(let r=2;r<rows.length;r++){
+    const row=rows[r]; if(!row||row[0]==null) continue;
+    const f=parseFloat(row[0]); if(isNaN(f)||f<0||f>1) continue;
+    const t=Math.round(f*1440/30)*30;                 // fraction of day → minutes, snapped to 30
+    const dp=String(row[1]||"").trim();
+    if(dp) dayparts[t]=dp;
+    for(const b of blocks){
+      const num=i=>{const v=row[b.c+i]; return (v==null||v==="")?null:(isNaN(+v)?null:+v);};
+      const o={sales:num(0), actual:num(1), sched:num(2), ns:num(3), min:num(4), rcmd:num(5), dp};
+      if(o.sales==null && o.rcmd==null) continue;
+      (days[b.day]=days[b.day]||{})[t]=o;
+      if(o.sales!=null && o.sales>0 && o.rcmd!=null) recs.push({s:o.sales, r:o.rcmd});
+    }
+  }
+  if(!recs.length && !Object.keys(days).length) return null;
+  const curve=buildLaborCurve(recs);
+  // flag slots where Panda's raw Rcmd disagrees with the monotone curve
+  const outliers=[];
+  for(const d in days) for(const t in days[d]){
+    const o=days[d][t];
+    if(o.sales!=null&&o.sales>0&&o.rcmd!=null){
+      const exp=staffForSales(o.sales,curve);
+      if(Math.abs(o.rcmd-exp)>=2) outliers.push({day:d,t:+t,dp:o.dp,sales:o.sales,rcmd:o.rcmd,exp});
+    }
+  }
+  outliers.sort((a,b)=>Math.abs(b.rcmd-b.exp)-Math.abs(a.rcmd-a.exp));
+  return {days, dayparts, curve, n:recs.length, outliers};
+};
+App.importLaborFile=function(file){
+  const rd=new FileReader();
+  rd.onload=e=>{
+    try{
+      const wb=XLSX.read(e.target.result,{type:"array"});
+      let parsed=null;
+      for(const name of wb.SheetNames){
+        const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:false});
+        if(App.isLaborModelSheet(rows)){ parsed=App.parseLaborModel(rows); if(parsed) break; }
+      }
+      if(!parsed){ App.toast("⚠️ Not a day-part export. Expected a 'DayOfWeekShort' header row with Net Sales / Rcmd columns."); return; }
+      state.labor=parsed;
+      App.renderAll(); App.renderLaborPanel(); App.switchTab("schedule");
+      App.toast("✓ Labor model loaded — "+parsed.n+" slots. Headcount targets now use sales intensity.");
+    }catch(err){ App.toast("⚠️ Could not read labor file: "+err.message); }
+  };
+  rd.readAsArrayBuffer(file);
+};
+App.renderLaborPanel=function(){
+  const box=$("laborPanel"); if(!box) return;
+  const L=state.labor;
+  if(!L){ box.innerHTML="<p class='muted'>No labor model loaded. Import the day-part export (Import/Export tab) to drive headcount targets from real sales intensity.</p>"; return; }
+  const c=L.curve;
+  let rows="";
+  for(let i=0;i<c.length;i++){
+    const lo=c[i].minSales, hi=c[i+1]?c[i+1].minSales-1:null;
+    rows+="<tr><td class='mono'>"+money(lo)+(hi!=null?" – "+money(hi):"+")+"</td><td class='mono'><b>"+c[i].staff+"</b></td><td class='muted'>"+(hi!=null?"":"peak")+"</td></tr>";
+  }
+  const mode=state.config.laborMode;
+  box.innerHTML=`
+    <div class="row between">
+      <div><b>${L.n}</b> scored slots · <span class="muted">${Object.keys(L.dayparts).length} day parts</span></div>
+      <label class="fld">Headcount source
+        <select id="laborMode" onchange="App.setLaborMode(this.value)">
+          <option value="curve"${mode==="curve"?" selected":""}>Smoothed by sales intensity</option>
+          <option value="rcmd"${mode==="rcmd"?" selected":""}>Panda Rcmd (raw, as provided)</option>
+        </select>
+      </label>
+    </div>
+    <p class="muted" style="margin-top:6px">Sales are per 30-minute slot. The smoothed curve is fitted so headcount never decreases as sales rise — this is what resolves the day-part inconsistency.</p>
+    <table style="margin-top:8px"><tr><th>Net sales / 30 min</th><th>Recommended staff</th><th></th></tr>${rows}</table>
+    ${L.outliers && L.outliers.length ? `
+      <h3 style="margin-top:14px">⚠️ Unclassified high-intensity slots (${L.outliers.length})</h3>
+      <p class="muted">Panda's raw Rcmd disagrees with the sales-intensity curve by 2+ heads here — these are the non-rush hours that haven't been classified yet. The smoothed mode corrects them.</p>
+      ${L.outliers.slice(0,8).map(o=>`<div class="alert-item warn">🟡<div><b>${DAY_LABEL[o.day]} ${fmt12(o.t)}</b> (${o.dp}) · ${money(o.sales)} sales → Panda Rcmd <b>${o.rcmd}</b>, curve says <b>${o.exp}</b></div></div>`).join("")}
+    ` : "<p class='muted' style='margin-top:12px'>✓ No slots deviate 2+ heads from the curve.</p>"}`;
+};
+App.setLaborMode=function(v){
+  state.config.laborMode=v; persist();
+  App.renderAll(); App.renderLaborPanel();
+  App.toast("✓ Headcount source: "+(v==="curve"?"smoothed sales-intensity curve":"Panda raw Rcmd"));
+};
+
 App.downloadScheduleTemplate=function(){
   const data=[["Name","Sun","Mon","Tue","Wed","Thu","Fri","Sat"],...SAMPLE_ROSTER];
   const ws=XLSX.utils.aoa_to_sheet(data); const wb=XLSX.utils.book_new();
@@ -1285,7 +1619,7 @@ App.importConfigFile=function(file){
       const c=JSON.parse(e.target.result);
       if(!c.mealBreakRules||!c.storeHours) throw new Error("not a valid config");
       state.config={...JSON.parse(JSON.stringify(DEFAULT_CONFIG)),...c};
-      state.shifts.forEach(s=>{ if(!s.override) autoAssign(s,state.config); });
+      autoAssignAllDays(state.config);
       App.renderAll(); App.renderSettings();
       App.toast("✓ Config imported: "+(c.name||file.name));
     }catch(err){ App.toast("⚠️ Config import failed: "+err.message); }
@@ -1328,6 +1662,7 @@ function wireDrop(dropId, inputId, handler){
 document.addEventListener("DOMContentLoaded",()=>{
   document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>App.switchTab(b.dataset.tab));
   wireDrop("dropSchedule","fileSchedule",fs=>fs[0]&&App.importScheduleFile(fs[0]));
+  wireDrop("dropLabor","fileLabor",fs=>fs[0]&&App.importLaborFile(fs[0]));
   wireDrop("dropSales","fileSales",fs=>App.importSalesFiles(fs));
   wireDrop("dropConfig","fileConfig",fs=>fs[0]&&App.importConfigFile(fs[0]));
   if(!restore()) loadSample();
