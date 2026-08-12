@@ -159,7 +159,7 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
 <body>
 <header>
   <h1>🐼 Panda <span>#2355</span> — Schedule & Labor</h1>
-  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v5 · labor model</span>
+  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v6 · smart import</span>
   <span class="week-label" id="weekLabel"></span>
   <nav id="nav">
     <button data-tab="schedule" class="active">Schedule</button>
@@ -293,9 +293,10 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
   <div class="grid c2">
     <div class="panel">
       <h2>Import Schedule (Excel / CSV)</h2>
-      <p class="muted">Format: first column = employee name, then 7 day columns (Sun–Sat) with shifts like <span class="mono">9-4</span>, <span class="mono">3:30-10:30</span>, or <span class="mono">off</span>.</p>
-      <div class="drop" id="dropSchedule">📂 Drop .xlsx / .csv here or click to browse</div>
+      <p class="muted">Auto-detects the layout: finds the Sun–Sat header row and the Name column, and ignores index columns (<span class="mono">No</span>), blank spacers and date sub-headers. Multi-tab workbooks let you pick the week.</p>
+      <div class="drop" id="dropSchedule">📂 Drop .xlsx / .xls / .csv here or click to browse</div>
       <input type="file" id="fileSchedule" accept=".xlsx,.xls,.csv" hidden>
+      <div id="scheduleImportStatus" style="margin-top:10px"></div>
       <div class="row" style="margin-top:10px">
         <button class="btn small secondary" onclick="App.downloadScheduleTemplate()">Download template</button>
         <button class="btn small secondary" onclick="App.loadSampleData(true)">Reset to sample data</button>
@@ -358,6 +359,17 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
       <button class="btn secondary" onclick="App.deleteShift()" id="mDelete">Delete shift</button>
       <button class="btn secondary" onclick="App.closeModal()">Cancel</button>
       <button class="btn" onclick="App.saveShift()">Save</button>
+    </div>
+  </div>
+</div>
+<!-- Week / sheet picker -->
+<div class="modal-bg" id="sheetModalBg" onclick="if(event.target===this)App.closeSheetPicker()">
+  <div class="modal">
+    <h2>Pick a week</h2>
+    <p class="muted" style="margin-bottom:10px">This workbook has multiple schedule tabs. Choose which one to load.</p>
+    <div id="sheetList"></div>
+    <div class="row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn secondary" onclick="App.closeSheetPicker()">Cancel</button>
     </div>
   </div>
 </div>
@@ -515,6 +527,104 @@ function parseShiftText(txt, day, cfg){
   if(!opts.length) return null;
   opts.sort((x,y)=>y.score-x.score);
   return { start: toHM(opts[0].s), end: toHM(opts[0].e) };
+}
+
+/* ---------- schedule sheet layout detection ----------
+   Works out which column holds names and which columns are which weekday,
+   so index columns ("No"), blank spacer columns and date sub-headers are
+   ignored automatically instead of being read as data. */
+const DAY_ALIASES = {
+  sun:["sun","sunday","su","sund"], mon:["mon","monday","m","mo"],
+  tue:["tue","tues","tuesday","tu"], wed:["wed","weds","wednesday","w","we"],
+  thu:["thu","thur","thurs","thursday","th"], fri:["fri","friday","f","fr"],
+  sat:["sat","saturday","sa"]
+};
+function normHdr(v){ return String(v==null?"":v).trim().toLowerCase().replace(/[^a-z]/g,""); }
+
+function detectScheduleLayout(rows){
+  let best=null;
+  const scan=Math.min(rows.length,20);
+  for(let r=0;r<scan;r++){
+    const row=rows[r]||[];
+    const dayCols={}; let hits=0;
+    for(let c=0;c<row.length;c++){
+      const k=normHdr(row[c]);
+      if(!k) continue;
+      for(const d of DAYS){
+        if(dayCols[d]==null && DAY_ALIASES[d].includes(k)){ dayCols[d]=c; hits++; break; }
+      }
+    }
+    if(hits>=5 && (!best || hits>best.hits)) best={headerRow:r, dayCols, hits};
+  }
+  if(!best) return null;
+
+  const hdr=rows[best.headerRow]||[];
+  const firstDay=Math.min(...Object.values(best.dayCols));
+  // explicit "Name" header wins
+  let nameCol=-1;
+  for(let c=0;c<hdr.length;c++) if(/^(name|employee|associate|staff)s?$/i.test(String(hdr[c]==null?"":hdr[c]).trim())){ nameCol=c; break; }
+  // otherwise: the column left of the days holding the most non-numeric text
+  if(nameCol<0){
+    let bestScore=-1;
+    for(let c=0;c<Math.max(firstDay,1);c++){
+      let score=0;
+      for(let r=best.headerRow+1;r<rows.length;r++){
+        const v=String((rows[r]||[])[c]==null?"":(rows[r]||[])[c]).trim();
+        if(v && isNaN(Number(v))) score++;
+      }
+      if(score>bestScore){ bestScore=score; nameCol=c; }
+    }
+  }
+  if(nameCol<0) nameCol=0;
+
+  // columns we are deliberately dropping
+  const used=new Set([nameCol, ...Object.values(best.dayCols)]);
+  const width=Math.max(hdr.length, ...rows.slice(0,10).map(r=>(r||[]).length));
+  const ignored=[];
+  for(let c=0;c<width;c++){
+    if(used.has(c)) continue;
+    const label=String(hdr[c]==null?"":hdr[c]).trim();
+    ignored.push({col:c, label: label || "(blank)"});
+  }
+  return {headerRow:best.headerRow, nameCol, dayCols:best.dayCols, ignored};
+}
+
+// Parse rows using a detected layout. Returns shifts + a filter report.
+// cell text that is deliberately not a shift (not an error)
+const NON_SHIFT = /^(off|x|-|–|n\/a|na|meeting|mtg|training|orientation|vacation|pto|sick|holiday|leave|call ?in|no ?show)$/i;
+
+function parseScheduleRows(rows, lay, cfg){
+  const shifts=[], skipped=[], notes=[], names=new Set();
+  let dateRow=null, dropped=0;
+  for(let r=lay.headerRow+1;r<rows.length;r++){
+    const row=rows[r]||[];
+    const raw=row[lay.nameCol];
+    const name=String(raw==null?"":raw).trim();
+    if(!name){
+      // blank name = the date sub-header row (or a spacer); capture dates once
+      if(!dateRow){
+        const vals=DAYS.map(d=>String(row[lay.dayCols[d]]==null?"":row[lay.dayCols[d]]).trim()).filter(Boolean);
+        if(vals.length>=5) dateRow=vals;
+      }
+      dropped++; continue;
+    }
+    if(/^(name|employee|associate|staff|total|no)$/i.test(name)){ dropped++; continue; }
+    if(!isNaN(Number(name))){ dropped++; continue; }   // stray index value
+    names.add(name);
+    for(const d of DAYS){
+      const cell=row[lay.dayCols[d]];
+      const txt=String(cell==null?"":cell).trim();
+      if(!txt) continue;
+      if(NON_SHIFT.test(txt)){
+        if(!/^(off|x|-|–|n\/a|na)$/i.test(txt)) notes.push(name+" "+DAY_LABEL[d]+": "+txt);
+        continue;
+      }
+      const p=parseShiftText(txt,d,cfg);
+      if(p) shifts.push({employee:name, day:d, start:p.start, end:p.end, breakStart:null});
+      else skipped.push(name+" "+DAY_LABEL[d]+' "'+txt+'"');
+    }
+  }
+  return {shifts, skipped, notes, employees:[...names], dateRow, droppedRows:dropped};
 }
 
 /* ---------- meal break engine ---------- */
@@ -1389,34 +1499,69 @@ App.saveSettings=function(){
 App.resetSettings=function(){ state.config=JSON.parse(JSON.stringify(DEFAULT_CONFIG)); App.renderSettings(); App.renderAll(); App.toast("Settings reset to defaults"); };
 
 /* ---------- schedule import ---------- */
+App._sheets=null;
 App.importScheduleFile=function(file){
   const rd=new FileReader();
   rd.onload=e=>{
     try{
       const wb=XLSX.read(e.target.result,{type:"array"});
-      const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false});
-      let imported=0, skipped=[];
-      const newShifts=[]; let nid=1;
-      for(const row of rows){
-        if(!row||!row[0]) continue;
-        const name=String(row[0]).trim();
-        if(/^name$/i.test(name)) continue;
-        DAYS.forEach((d,i)=>{
-          const cell=row[i+1];
-          if(cell==null||String(cell).trim()===""||/^off$/i.test(String(cell).trim())) return;
-          const p=parseShiftText(cell,d,state.config);
-          if(p){ newShifts.push({id:nid++,employee:name,day:d,start:p.start,end:p.end,breakStart:null}); imported++; }
-          else skipped.push(name+" "+DAY_LABEL[d]+' "'+cell+'"');
-        });
+      const found=[];
+      for(const name of wb.SheetNames){
+        const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:false,defval:null});
+        const lay=detectScheduleLayout(rows);
+        if(!lay) continue;
+        const p=parseScheduleRows(rows,lay,state.config);
+        if(p.shifts.length) found.push({sheet:name, lay, ...p});
       }
-      if(!imported){ App.toast("⚠️ No shifts parsed. Expected: Name, Sun…Sat with times like 9-4."); return; }
-      state.shifts=newShifts; state.nextId=nid;
-      autoAssignAllDays(state.config);
-      App.renderAll(); App.switchTab("schedule");
-      App.toast("✓ Imported "+imported+" shifts"+(skipped.length?" · ⚠️ skipped "+skipped.length+" unparseable: "+skipped.slice(0,3).join("; "):""));
+      if(!found.length){
+        App.toast("⚠️ No schedule grid found. Need a header row with Sun…Sat and a Name column.");
+        return;
+      }
+      App._sheets=found;
+      if(found.length===1) App.applySheet(0);
+      else App.openSheetPicker();
     }catch(err){ App.toast("⚠️ Could not read file: "+err.message); }
   };
   rd.readAsArrayBuffer(file);
+};
+
+App.openSheetPicker=function(){
+  const list=App._sheets;
+  $("sheetList").innerHTML=list.map((s,i)=>
+    `<div class="alert-item ${i===list.length-1?"ok":"info"}" style="cursor:pointer" onclick="App.applySheet(${i})">
+       <div style="min-width:120px"><b>${s.sheet}</b></div>
+       <div>${s.shifts.length} shifts · ${s.employees.length} staff${s.dateRow?" · "+s.dateRow[0]+"–"+s.dateRow[s.dateRow.length-1]:""}
+       ${s.skipped.length?`<br><span class="badge b-warn">${s.skipped.length} unparseable</span>`:""}${s.notes&&s.notes.length?` <span class="badge b-info">${s.notes.length} note(s)</span>`:""}</div>
+     </div>`).join("");
+  $("sheetModalBg").classList.add("open");
+};
+App.closeSheetPicker=function(){ $("sheetModalBg").classList.remove("open"); };
+
+App.applySheet=function(i){
+  const s=App._sheets[i];
+  let nid=1;
+  state.shifts=s.shifts.map(x=>({...x, id:nid++}));
+  state.nextId=nid;
+  if(s.dateRow) state.weekLabel="Week of "+s.dateRow[0]+" – "+s.dateRow[s.dateRow.length-1];
+  else state.weekLabel="Week "+s.sheet;
+  autoAssignAllDays(state.config);
+  App.closeSheetPicker();
+  App.renderAll(); App.renderImportReport(s); App.switchTab("schedule");
+  App.toast("✓ Imported "+s.shifts.length+" shifts from “"+s.sheet+"”"+(s.skipped.length?" · "+s.skipped.length+" unparseable":""));
+};
+
+App.renderImportReport=function(s){
+  const box=$("scheduleImportStatus"); if(!box) return;
+  const cols=Object.entries(s.lay.dayCols).map(([d,c])=>DAY_LABEL[d]+"=col "+(c+1)).join(", ");
+  box.innerHTML=`
+    <div class="alert-item ok">✓<div>
+      <b>“${s.sheet}”</b> — ${s.shifts.length} shifts, ${s.employees.length} staff.<br>
+      <span class="muted">Detected: Name = col ${s.lay.nameCol+1} · ${cols}</span>
+      ${s.lay.ignored.length?`<br><span class="muted">Filtered out: ${s.lay.ignored.map(x=>"col "+(x.col+1)+" “"+x.label+"”").join(", ")}${s.droppedRows?" · "+s.droppedRows+" non-data row(s)":""}</span>`:""}
+    </div></div>
+    ${s.notes&&s.notes.length?`<div class="alert-item info">ℹ️<div><b>${s.notes.length} non-shift entr${s.notes.length===1?"y":"ies"}</b> (meetings, training, leave) — excluded from coverage:<br><span class="mono" style="font-size:11px">${s.notes.slice(0,5).join("<br>")}${s.notes.length>5?"<br>…":""}</span></div></div>`:""}
+    ${s.skipped.length?`<div class="alert-item warn">⚠️<div><b>${s.skipped.length} cell(s) not understood:</b><br><span class="mono" style="font-size:11px">${s.skipped.slice(0,6).join("<br>")}${s.skipped.length>6?"<br>…":""}</span></div></div>`:""}
+    ${App._sheets && App._sheets.length>1?`<button class="btn small secondary" style="margin-top:6px" onclick="App.openSheetPicker()">Switch week (${App._sheets.length} in file)</button>`:""}`;
 };
 /* ---------- Panda labor model import ("Export" sheet, 30-min day-part data) ---------- */
 App.isLaborModelSheet=function(rows){
