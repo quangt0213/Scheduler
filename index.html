@@ -53,6 +53,13 @@ th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05
 .heat tr.rush-start td{border-top:1px solid rgba(255,107,74,.5)}
 .heat tr.rush-end td{border-bottom:1px solid rgba(255,107,74,.5)}
 .rush-tag{font-size:9px;letter-spacing:.04em;color:var(--accent2);display:block;font-weight:700}
+.heat .ar{font-weight:800;font-size:10px;margin-left:1px}
+.heat .ar.up{color:var(--red)}
+.heat .ar.dn{color:var(--blue)}
+.heat .cell-r .ar.dn{color:#ff9d5a}
+.heat th .dayint{display:block;font-size:11px;letter-spacing:1.5px;color:var(--accent2);font-weight:700;margin-top:3px}
+.heat th .dayint .off{color:#39404f}
+.heat th .daytot{display:block;font-size:9px;color:var(--muted);font-weight:400;letter-spacing:0}
 .cell-g{background:rgba(62,207,142,.16);color:var(--green)}
 .cell-y{background:rgba(245,196,81,.14);color:var(--yellow)}
 .cell-r{background:rgba(255,90,90,.16);color:var(--red)}
@@ -159,7 +166,7 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
 <body>
 <header>
   <h1>🐼 Panda <span>#2355</span> — Schedule & Labor</h1>
-  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v6 · smart import</span>
+  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v7 · arrows+day intensity</span>
   <span class="week-label" id="weekLabel"></span>
   <nav id="nav">
     <button data-tab="schedule" class="active">Schedule</button>
@@ -180,11 +187,14 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
     <div class="row between">
       <h2>Hourly Coverage Heat Map</h2>
       <div class="legend">
-        <span><span class="sw" style="background:rgba(62,207,142,.5)"></span>Matches demand</span>
-        <span><span class="sw" style="background:rgba(245,196,81,.5)"></span>1 off target</span>
-        <span><span class="sw" style="background:rgba(255,90,90,.5)"></span>2+ off — short <b>or</b> over-staffed</span>
-        <span><span class="sw" style="background:rgba(90,167,255,.2)"></span>Prep / closing crew</span>
+        <span><b style="color:var(--red)">↑n</b> add n staff (short)</span>
+        <span><b style="color:var(--blue)">↓n</b> cut n staff (over)</span>
+        <span><span class="sw" style="background:rgba(62,207,142,.5)"></span>On target</span>
+        <span><span class="sw" style="background:rgba(245,196,81,.5)"></span>1 off</span>
+        <span><span class="sw" style="background:rgba(255,90,90,.5)"></span>2+ off</span>
+        <span><span class="sw" style="background:rgba(90,167,255,.2)"></span>Prep / closing</span>
         <span><span class="sw" style="background:rgba(255,107,74,.35)"></span>Rush hour</span>
+        <span><b style="color:var(--accent2)">●●●○○</b> that day's sales vs busiest day</span>
       </div>
     </div>
     <div class="scroll-x"><table class="heat" id="heatMap"></table></div>
@@ -923,6 +933,18 @@ App.targetStaff = function(day, t){
 };
 App.daypartAt = function(t){ return state.labor?.dayparts?.[t] || ""; };
 
+// total net sales for a whole day — used for the per-day intensity bubbles
+App.dayNetSales = function(day){
+  const L=state.labor;
+  if(L && L.days[day]){
+    let s=0, has=false;
+    for(const t in L.days[day]){ const v=L.days[day][t].sales; if(v!=null){ s+=v; has=true; } }
+    if(has) return s;
+  }
+  const sd=state.sales && state.sales.days.find(x=>x.day===day);
+  return sd ? sd.total : null;
+};
+
 // symmetric: over-staffing is treated as seriously as under-staffing
 App.cellClass = function(n, day, t){
   const open=toMin(state.config.storeHours[day].open), close=toMin(state.config.storeHours[day].close);
@@ -941,7 +963,26 @@ App.renderHeatMap = function(){
   const salesByHour = App.hourlySalesAvg();
   const maxSales = Math.max(1,...Object.values(salesByHour),1);
   const hasLabor=!!state.labor;
-  let html = "<tr><th>Time</th>"+(hasLabor?"<th>Day part</th>":"")+DAYS.map(d=>"<th>"+DAY_LABEL[d]+"</th>").join("")+"<th>Sales intensity</th></tr>";
+  // per-day intensity: each day's own net sales, scaled across the week's
+  // observed range (min→1 bubble, max→5) so near-identical totals still separate
+  const dayTot={}; const vals=[];
+  for(const d of DAYS){ const v=App.dayNetSales(d); dayTot[d]=v; if(v!=null) vals.push(v); }
+  const maxTot=vals.length?Math.max(...vals):0, minTot=vals.length?Math.min(...vals):0;
+  const span=maxTot-minTot;
+  const ranked=[...vals].sort((a,b)=>b-a);
+  const dayHdr = DAYS.map(d=>{
+    const v=dayTot[d];
+    if(v==null||maxTot<=0) return "<th>"+DAY_LABEL[d]+"</th>";
+    const norm = span>0 ? (v-minTot)/span : 1;
+    const filled=Math.min(5,Math.max(1,1+Math.round(norm*4)));
+    const bubbles="●".repeat(filled)+"<span class='off'>"+"●".repeat(5-filled)+"</span>";
+    const short = v>=1000 ? "$"+(v/1000).toFixed(1)+"k" : money(v);
+    const rank=ranked.indexOf(v)+1;
+    const tag = rank===1?" — busiest day" : rank===ranked.length?" — slowest day" : " — #"+rank+" of "+ranked.length;
+    return "<th title='"+DAY_LABEL[d]+" net sales "+money(v)+tag+" ("+Math.round(v/maxTot*100)+"% of busiest)'>"+DAY_LABEL[d]+
+           "<span class='dayint'>"+bubbles+"</span><span class='daytot'>"+short+"</span></th>";
+  }).join("");
+  let html = "<tr><th>Time</th>"+(hasLabor?"<th>Day part</th>":"")+dayHdr+"<th>Time-of-day<br>intensity</th></tr>";
   for(const t of hrs){
     const pct = (salesByHour[Math.floor(t/60)]||0)/maxSales;
     const dots = "●".repeat(Math.max(0,Math.round(pct*7)))||"·";
@@ -961,12 +1002,19 @@ App.renderHeatMap = function(){
       const inStore=t>=open&&t<toMin(state.config.storeHours[d].close);
       const diff=n-target;
       const sl=slotSales(d,t);
+      // ↑ = add people (under-staffed) · ↓ = cut people (over-staffed)
+      let arrow="";
+      if(inStore && target!=null && diff!==0){
+        arrow = diff<0
+          ? "<span class='ar up'>↑"+(-diff)+"</span>"
+          : "<span class='ar dn'>↓"+diff+"</span>";
+      }
       const note = inStore
-        ? " / rec "+target+(diff>=2?" — OVER by "+diff:diff<=-2?" — SHORT by "+(-diff):diff===0?" — on target":diff===1?" — 1 over":" — 1 short")
+        ? " / rec "+target+(diff===0?" — on target":diff<0?" — SHORT "+(-diff)+", add "+(-diff):" — OVER by "+diff+", cut "+diff)
           +(sl!=null?" · "+money(sl)+" sales":"")
         : (t<open?" (prep)":" (closing)");
       const show = (n===0 && t<open) ? "–" : n;
-      html += "<td class='"+App.cellClass(n,d,t)+"' title='"+DAY_LABEL[d]+" "+fmt12(t)+": "+n+" staff"+note+(rush?" · "+rush.reason:"")+"'>"+show+"</td>";
+      html += "<td class='"+App.cellClass(n,d,t)+"' title='"+DAY_LABEL[d]+" "+fmt12(t)+": "+n+" staff"+note+(rush?" · "+rush.reason:"")+"'>"+show+arrow+"</td>";
     }
     html += "<td class='muted mono'>"+dots+"</td></tr>";
   }
