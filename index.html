@@ -166,7 +166,7 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
 <body>
 <header>
   <h1>🐼 Panda <span>#2355</span> — Schedule & Labor</h1>
-  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v7 · arrows+day intensity</span>
+  <span class="badge b-ok" id="verBadge" title="Build version — confirms which file is loaded">v9 · auto-fix</span>
   <span class="week-label" id="weekLabel"></span>
   <nav id="nav">
     <button data-tab="schedule" class="active">Schedule</button>
@@ -224,6 +224,14 @@ hr{border:none;border-top:1px solid var(--border);margin:14px 0}
         <select id="breakDaySelect" onchange="App.renderBreakPanel()"></select>
       </label>
       <div id="breakPanel" style="margin-top:14px"></div>
+    </div>
+    <div class="panel">
+      <div class="row between">
+        <h2>💡 Suggested Fixes</h2>
+        <button class="btn small secondary" onclick="App.renderFixes()">Recalculate</button>
+      </div>
+      <p class="muted">Each option is simulated against the real rules — only changes that actually free a break are listed, ranked by breaks gained then coverage impact.</p>
+      <div id="fixList"></div>
     </div>
     <div class="panel">
       <h2>Conflict Report</h2>
@@ -406,6 +414,8 @@ const DEFAULT_CONFIG = {
     minShiftDuration: 6.0,
     breakDuration: 30,
     maxHoursBeforeBreak: 5,   // break must be completed before this many hours worked (CA 5th-hour rule)
+    minHoursBeforeBreak: 1,   // must have worked at least this long first (no breaks straight off the clock)
+    prefHoursBeforeBreak: 2,  // upper edge of the preferred 1–2 h band
     staggerBreaks: true,      // no two employees on meal break at the same time
     blackoutHours: [
       {start:"12:00", end:"14:00", reason:"Lunch rush"},
@@ -657,24 +667,29 @@ function validBreakWindows(shift, cfg, busy){
   const bd = cfg.mealBreakRules.breakDuration;
   const S = toMin(shift.start), E = toMin(shift.end);
   const bos = blackoutsMin(cfg);
-  // 5th-hour rule: the 30-min break must be completed before this many hours of work
-  const deadline = S + (cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
+  const R=cfg.mealBreakRules;
+  // 5th-hour rule: the 30-min break must be COMPLETED before this many hours of work
+  const deadline = S + (R.maxHoursBeforeBreak||5)*60;
+  // fatigue rule: must have already worked this long before the break STARTS
+  const minH = R.minHoursBeforeBreak==null ? 1 : R.minHoursBeforeBreak;
+  const prefH = R.prefHoursBeforeBreak==null ? 2 : R.prefHoursBeforeBreak;
+  const earliest = S + minH*60;
+  const prefHi  = S + prefH*60;
   const taken = busy || occupiedBreaks(cfg, shift.day, shift.id);
   const wins = [];
   // break starts snap to the clock: :00 or :30 only (e.g. 4:00, 4:30 — never 3:45)
-  for(let t=Math.ceil(S/30)*30; t+bd<=E; t+=30){
+  for(let t=Math.ceil(Math.max(S,earliest)/30)*30; t+bd<=E; t+=30){
     if(t+bd > deadline) break;             // too late — past the 5th hour of work
     const clash = bos.some(b => t < b.e && t+bd > b.s);
     if(clash) continue;
     // stagger rule: nobody else may be on break at the same time
     if(taken.some(o => t < o.e && t+bd > o.s)) continue;
-    const mid = t > S+60 && t+bd < E-60;   // prefer not first/last hour
-    wins.push({s:t, e:t+bd, priority: mid?2:1});
+    const inBand = t >= earliest && t <= prefHi;   // the preferred 1.5–2 h window
+    wins.push({s:t, e:t+bd, priority: inBand?3:2});
   }
-  // rank: mid-shift first, then closeness to shift midpoint with a bias toward
-  // post-rush (later-half) windows; slight preference for on-the-hour starts
-  const midShift=(S+E)/2;
-  const score=w=>{ const m=(w.s+w.e)/2; return Math.abs(m-midShift)*(m<midShift?3:1) + (w.s%60?20:0); };
+  // rank: preferred fatigue band first, then closest to the 2 h mark,
+  // with a slight nudge toward on-the-hour starts
+  const score=w=>Math.abs(w.s-prefHi) + (w.s%60?15:0);
   wins.sort((a,b)=> b.priority-a.priority || score(a)-score(b));
   return wins;
 }
@@ -698,10 +713,14 @@ function shiftStatus(shift, cfg){
   if(!requiresBreak(shift,cfg)) return {code:"no_break_needed", label:"≤"+cfg.mealBreakRules.minShiftDuration+"h — 10-min breaks only", level:"ok"};
   if(shift.breakStart!=null){
     const bs=toMin(shift.breakStart), bd=cfg.mealBreakRules.breakDuration;
-    const deadline=toMin(shift.start)+(cfg.mealBreakRules.maxHoursBeforeBreak||5)*60;
+    const R=cfg.mealBreakRules;
+    const S0=toMin(shift.start);
+    const deadline=S0+(R.maxHoursBeforeBreak||5)*60;
+    const minH=R.minHoursBeforeBreak==null?1:R.minHoursBeforeBreak;
     const inBlackout = blackoutsMin(cfg).some(b=> bs < b.e && bs+bd > b.s);
-    const inShift = bs>=toMin(shift.start) && bs+bd<=toMin(shift.end);
-    if(bs+bd > deadline) return {code:"invalid_assignment", label:"Break past the "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th hour of work", level:"crit"};
+    const inShift = bs>=S0 && bs+bd<=toMin(shift.end);
+    if(bs+bd > deadline) return {code:"invalid_assignment", label:"Break past the "+(R.maxHoursBeforeBreak||5)+"th hour of work", level:"crit"};
+    if(bs < S0+minH*60) return {code:"break_too_early", label:"Break only "+((bs-S0)/60).toFixed(1)+"h into shift (min "+minH+"h)", level:"crit"};
     const clash = occupiedBreaks(cfg, shift.day, shift.id).find(o=> bs < o.e && bs+bd > o.s);
     if(clash){
       const who = state.shifts.find(x=>x.day===shift.day && x.id!==shift.id && x.breakStart!=null && toMin(x.breakStart)===clash.s);
@@ -772,6 +791,39 @@ function assignBreaksForDay(day, cfg){
 }
 
 function autoAssignAllDays(cfg){ for(const d of DAYS) assignBreaksForDay(d,cfg); }
+
+/* Pure solver used by the fix-suggestion engine: given an arbitrary list of
+   shifts for one day, how many breaks can be legally placed? Touches no state. */
+function solveBreaksFor(dayShifts, cfg, lockedSlots){
+  const need=dayShifts.filter(s=>requiresBreak(s,cfg));
+  const locked=(lockedSlots||[]).map(t=>({s:t, e:t+cfg.mealBreakRules.breakDuration}));
+  const cands=need.map(s=>validBreakWindows(s,cfg,locked).map(w=>w.s));
+  const slotOf=new Map();
+  function tryA(i,seen){
+    for(const t of cands[i]){
+      if(seen.has(t)) continue;
+      seen.add(t);
+      const o=slotOf.get(t);
+      if(o===undefined || tryA(o,seen)){ slotOf.set(t,i); return true; }
+    }
+    return false;
+  }
+  const order=need.map((_,i)=>i).sort((a,b)=>cands[a].length-cands[b].length);
+  for(const i of order) tryA(i,new Set());
+  return {placed:slotOf.size, need:need.length};
+}
+
+// coverage error for a day (sum of |staff - recommended| across open slots)
+function coverageError(dayShifts, day, cfg){
+  const open=toMin(cfg.storeHours[day].open), close=toMin(cfg.storeHours[day].close);
+  let err=0;
+  for(let t=open;t<close;t+=30){
+    const n=dayShifts.filter(s=>toMin(s.start)<=t && toMin(s.end)>t).length;
+    const r=recommendedStaff(day,t,cfg);
+    if(r!=null) err+=Math.abs(n-r);
+  }
+  return err;
+}
 
 /* ---------- coverage ---------- */
 function staffAt(day, hourMin){
@@ -845,7 +897,7 @@ function loadSample(){
 }
 
 /* ---------- persistence ---------- */
-const LS_KEY="panda2355_v5";
+const LS_KEY="panda2355_v6";
 function persist(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify({config:state.config, shifts:state.shifts, sales:state.sales, labor:state.labor, nextId:state.nextId, weekLabel:state.weekLabel})); }catch(e){}
 }
@@ -1111,6 +1163,7 @@ App.renderBreaksTab = function(){
   }
   App.renderBreakPanel();
   App.renderConflictReport();
+  App.renderFixes();
 };
 
 App.renderBreakPanel = function(){
@@ -1159,7 +1212,10 @@ App.breakBlock = function(s){
     winsHtml="<div class='row'>"+wins.map(w=>{
       const selCls = s.breakStart!=null&&toMin(s.breakStart)===w.s?" selected":"";
       return "<button class='win-btn"+selCls+(w.suggested?" suggested":"")+"' onclick='App.assignBreak("+s.id+","+w.s+")'>"+fmt12r(w.s,w.e)+"</button>";
-    }).join("")+"</div><p class='tag' style='margin-top:6px'>★ = suggested (mid-shift, outside rushes)</p>";
+    }).join("")+"</div><p class='tag' style='margin-top:6px'>★ = suggested · valid range "+
+      fmt12(S+(cfg.mealBreakRules.minHoursBeforeBreak==null?1:cfg.mealBreakRules.minHoursBeforeBreak)*60)+
+      " – "+fmt12(S+(cfg.mealBreakRules.maxHoursBeforeBreak||5)*60)+
+      " (worked "+(cfg.mealBreakRules.minHoursBeforeBreak==null?1:cfg.mealBreakRules.minHoursBeforeBreak)+"h+, done by "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"h), outside rushes</p>";
   }
   return "<b>"+s.employee+"</b> — "+fmt12(S)+"–"+fmt12(E)+" ("+durH(s).toFixed(1)+"h) "+
     "<span class='badge b-"+(st.level==="ok"?"ok":st.level==="warn"?"warn":"crit")+"'>"+st.label+"</span>"+
@@ -1187,7 +1243,8 @@ App.conflictLists = function(){
     const st=shiftStatus(s,cfg);
     const d=durH(s);
     if(st.level==="crit" && !s.ack) crit.push({s,msg:
-      st.code==="no_valid_break_window" ? "No valid break window — blackouts + "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"th-hour rule leave no slot. ACTION: adjust shift start, split shift, or override."
+      st.code==="no_valid_break_window" ? "No valid break window — blackouts + the "+(cfg.mealBreakRules.minHoursBeforeBreak==null?1:cfg.mealBreakRules.minHoursBeforeBreak)+"h earliest / "+(cfg.mealBreakRules.maxHoursBeforeBreak||5)+"h latest rules leave no slot. ACTION: adjust shift start, split shift, or override."
+      : st.code==="break_too_early" ? st.label+" — associates shouldn't break straight off the clock. ACTION: move it later."
       : st.code==="break_collision" ? st.label+" — only one employee may be on meal break at a time. ACTION: re-assign one of them."
       : st.code==="no_free_slot" ? "Every valid slot is already taken by a coworker (stagger rule). ACTION: move someone else's break, or adjust this shift."
       : "Assigned break violates current rules ("+st.label+"). ACTION: re-assign."});
@@ -1198,11 +1255,157 @@ App.conflictLists = function(){
   return {crit,warn,ok};
 };
 
+// Explain *why* breaks can't be placed: which shift start times are squeezed
+// between the earliest-break rule, a blackout, and the 5th-hour deadline.
+App.breakBottlenecks = function(){
+  const cfg=state.config, R=cfg.mealBreakRules;
+  const minH=R.minHoursBeforeBreak==null?1:R.minHoursBeforeBreak;
+  const groups={};
+  for(const s of state.shifts){
+    if(!requiresBreak(s,cfg)) continue;
+    const solo=validBreakWindows(s,cfg,[]);          // ignoring coworkers
+    if(solo.length>1) continue;
+    const k=s.start;
+    groups[k]=groups[k]||{start:s.start, slots:solo.length, shifts:[], slot:solo[0]?solo[0].s:null};
+    groups[k].shifts.push(s);
+  }
+  return Object.values(groups)
+    .filter(g=>g.shifts.length>1 || g.slots===0)
+    .sort((a,b)=>b.shifts.length-a.shifts.length);
+};
+
+/* ---------- auto-suggest fixes ----------
+   For every day that can't place all its breaks, simulate candidate remedies and
+   keep only those that actually place more breaks. Each is scored on how many
+   breaks it frees vs. how much it disturbs coverage. */
+App.computeFixes = function(){
+  const cfg=state.config, fixes=[];
+  const clone=o=>JSON.parse(JSON.stringify(o));
+  for(const day of DAYS){
+    const dayShifts=state.shifts.filter(s=>s.day===day);
+    if(!dayShifts.length) continue;
+    const base=solveBreaksFor(dayShifts.map(s=>({...s})),cfg);
+    if(base.placed>=base.need) continue;
+    const baseErr=coverageError(dayShifts,day,cfg);
+    const stuck=dayShifts.filter(s=>requiresBreak(s,cfg)&&s.breakStart==null);
+
+    // A) nudge one shift's start (whole shift slides, duration preserved)
+    for(const s of dayShifts.filter(x=>requiresBreak(x,cfg))){
+      for(const delta of [-60,-30,30,60]){
+        const ns=toMin(s.start)+delta, ne=toMin(s.end)+delta;
+        if(ns<toMin(cfg.gridStart||"07:00") || ne>schedClose(day)) continue;
+        const mutated=dayShifts.map(x=>x.id===s.id?{...x,start:toHM(ns),end:toHM(ne)}:{...x});
+        const r=solveBreaksFor(mutated,cfg);
+        if(r.placed>base.placed){
+          fixes.push({day, gain:r.placed-base.placed, kind:"move", shiftId:s.id, delta,
+            covDelta:coverageError(mutated,day,cfg)-baseErr,
+            label:"Move <b>"+s.employee+"</b> ("+DAY_LABEL[day]+") "+(delta>0?"later":"earlier")+" by "+Math.abs(delta)+" min",
+            detail:fmt12r(toMin(s.start),toMin(s.end))+" → "+fmt12r(ns,ne)});
+        }
+      }
+    }
+    // B) shorten a shift below the break threshold (no break required at all)
+    for(const s of stuck){
+      const target=cfg.mealBreakRules.minShiftDuration*60;
+      const ne=toMin(s.start)+target;
+      if(ne>=toMin(s.end)) continue;
+      const mutated=dayShifts.map(x=>x.id===s.id?{...x,end:toHM(ne)}:{...x});
+      const r=solveBreaksFor(mutated,cfg);
+      if(r.placed>=base.placed){
+        fixes.push({day, gain:(r.placed-base.placed)+1, kind:"shorten", shiftId:s.id, newEnd:toHM(ne),
+          covDelta:coverageError(mutated,day,cfg)-baseErr,
+          label:"Shorten <b>"+s.employee+"</b> ("+DAY_LABEL[day]+") to "+cfg.mealBreakRules.minShiftDuration+"h — no meal break required",
+          detail:fmt12r(toMin(s.start),toMin(s.end))+" → "+fmt12r(toMin(s.start),ne)});
+      }
+    }
+    // C) trim a blackout window (global — helps every day at once)
+    cfg.mealBreakRules.blackoutHours.forEach((b,bi)=>{
+      for(const trim of [30,60]){
+        const c2=clone(cfg);
+        const ne=toMin(b.end)-trim;
+        if(ne<=toMin(b.start)) continue;
+        c2.mealBreakRules.blackoutHours[bi].end=toHM(ne);
+        let gain=0;
+        for(const dd of DAYS){
+          const ds=state.shifts.filter(s=>s.day===dd);
+          if(!ds.length) continue;
+          gain += solveBreaksFor(ds.map(s=>({...s})),c2).placed - solveBreaksFor(ds.map(s=>({...s})),cfg).placed;
+        }
+        if(gain>0) fixes.push({day:"all", gain, kind:"blackout", bi, newEnd:toHM(ne), covDelta:0,
+          label:"End <b>"+b.reason+"</b> "+trim+" min earlier ("+fmt12(toMin(b.end))+" → "+fmt12(ne)+")",
+          detail:"Frees "+gain+" break(s) across the week · breaks become legal from "+fmt12(ne)});
+      }
+    });
+  }
+  // de-duplicate global blackout fixes, best first
+  const seen=new Set();
+  return fixes
+    .filter(f=>{ const k=f.kind+"|"+(f.shiftId||"")+"|"+(f.bi??"")+"|"+(f.delta||f.newEnd||""); if(seen.has(k))return false; seen.add(k); return true; })
+    .sort((a,b)=> b.gain-a.gain || a.covDelta-b.covDelta)
+    .slice(0,12);
+};
+
+App.renderFixes = function(){
+  const box=$("fixList"); if(!box) return;
+  const fixes=App._fixes=App.computeFixes();
+  if(!fixes.length){
+    const unplaced=state.shifts.filter(s=>requiresBreak(s,state.config)&&s.breakStart==null&&!s.ack).length;
+    box.innerHTML = unplaced
+      ? "<p class='muted'>No single change fixes the remaining "+unplaced+" break(s) — they need two adjustments at once, or a manager override.</p>"
+      : "<p class='muted'>✓ Every required break is placed. Nothing to fix.</p>";
+    return;
+  }
+  box.innerHTML=fixes.map((f,i)=>{
+    const cov = f.covDelta>0 ? "<span class='badge b-warn'>coverage −"+f.covDelta+"</span>"
+              : f.covDelta<0 ? "<span class='badge b-ok'>coverage +"+(-f.covDelta)+"</span>"
+              : "<span class='badge b-muted'>coverage unchanged</span>";
+    return "<div class='alert-item ok'>💡<div style='flex:1'>"+f.label+
+      "<br><span class='muted'>"+f.detail+"</span><br>"+
+      "<span class='badge b-ok'>+"+f.gain+" break"+(f.gain>1?"s":"")+"</span> "+cov+
+      " <button class='btn small' style='margin-left:6px' onclick='App.applyFix("+i+")'>Apply</button>"+
+      "</div></div>";
+  }).join("");
+};
+
+App.applyFix = function(i){
+  const f=App._fixes[i]; if(!f) return;
+  if(f.kind==="move"){
+    const s=state.shifts.find(x=>x.id===f.shiftId);
+    s.start=toHM(toMin(s.start)+f.delta); s.end=toHM(toMin(s.end)+f.delta); s.override=false;
+  } else if(f.kind==="shorten"){
+    const s=state.shifts.find(x=>x.id===f.shiftId);
+    s.end=f.newEnd; s.override=false;
+  } else if(f.kind==="blackout"){
+    state.config.mealBreakRules.blackoutHours[f.bi].end=f.newEnd;
+  }
+  autoAssignAllDays(state.config);
+  App.renderAll(); App.renderFixes();
+  App.toast("✓ Applied: "+f.label.replace(/<[^>]+>/g,""));
+};
+
 App.renderConflictReport = function(){
   const {crit,warn,ok}=App.conflictLists();
   const item=(c,cls,icon)=>"<div class='alert-item "+cls+"'>"+icon+"<div><b>"+c.s.employee+"</b> ("+DAY_LABEL[c.s.day]+" "+fmt12(toMin(c.s.start))+"–"+fmt12(toMin(c.s.end))+"): "+c.msg+"</div></div>";
+  const bn=App.breakBottlenecks();
+  const cfg2=state.config, R2=cfg2.mealBreakRules;
+  const minH2=R2.minHoursBeforeBreak==null?1:R2.minHoursBeforeBreak;
+  const bnHtml = bn.length ? "<h3>🧩 Structural bottlenecks</h3>"+
+    "<p class='muted'>These start times leave only one legal break slot, so only one person per day can use it. Widening a rule or staggering starts frees them up.</p>"+
+    bn.map(g=>{
+      const S=toMin(g.start);
+      const placed=g.shifts.filter(s=>s.breakStart!=null).length;
+      return "<div class='alert-item "+(placed<g.shifts.length?"crit":"warn")+"'>🧩<div>"+
+        "<b>"+fmt12(S)+" starts</b> — "+g.shifts.length+" shift(s) this week, "+
+        (g.slots===0 ? "<b>no legal slot at all</b>" : "only one legal slot: <b>"+fmt12(g.slot)+"</b>")+
+        "<br><span class='muted'>Earliest allowed "+fmt12(S+minH2*60)+" (worked "+minH2+"h) · must finish by "+fmt12(S+(R2.maxHoursBeforeBreak||5)*60)+" · blackouts remove the rest. "+
+        placed+" of "+g.shifts.length+" placed.</span>"+
+        "<br><span class='muted'>Fixes: stagger these starts by 30–60 min · shorten one below "+R2.minShiftDuration+"h · or trim a blackout window in Settings.</span>"+
+        "</div></div>";
+    }).join("") : "";
+
   $("conflictReport").innerHTML =
     "<h3>🔴 Critical ("+crit.length+")</h3>"+(crit.map(c=>item(c,"crit","🔴")).join("")||"<p class='muted'>None</p>")+
+    bnHtml+
     "<h3 style='margin-top:10px'>🟡 Warning ("+warn.length+")</h3>"+(warn.map(c=>item(c,"warn","🟡")).join("")||"<p class='muted'>None</p>")+
     "<h3 style='margin-top:10px'>✓ OK ("+ok.length+")</h3><p class='muted'>"+ok.length+" shifts have valid break status.</p>";
 };
@@ -1499,7 +1702,10 @@ App.renderSettings = function(){
   <div class="panel"><h3>3 · Meal break rules</h3>
     <label class="fld">Min shift duration for meal break (hrs) <input id="mbMin" type="number" step="0.5" value="${c.mealBreakRules.minShiftDuration}"></label><br>
     <label class="fld">Break duration (min) <input id="mbDur" type="number" value="${c.mealBreakRules.breakDuration}"></label><br>
-    <label class="fld">Break must be completed before hour of work (5th-hour rule) <input id="mbMax" type="number" step="0.5" value="${c.mealBreakRules.maxHoursBeforeBreak||5}"></label>
+    <label class="fld">Earliest — must have worked this many hours first <input id="mbMin2" type="number" step="0.25" value="${c.mealBreakRules.minHoursBeforeBreak==null?1:c.mealBreakRules.minHoursBeforeBreak}"></label><br>
+    <label class="fld">Preferred — aim to break by this many hours in <input id="mbPref" type="number" step="0.25" value="${c.mealBreakRules.prefHoursBeforeBreak==null?2:c.mealBreakRules.prefHoursBeforeBreak}"></label>
+    <p class="tag">Breaks are suggested in the ${c.mealBreakRules.minHoursBeforeBreak==null?1:c.mealBreakRules.minHoursBeforeBreak}–${c.mealBreakRules.prefHoursBeforeBreak==null?2:c.mealBreakRules.prefHoursBeforeBreak} h band so nobody breaks straight off the clock or burns out late.</p>
+    <label class="fld">Latest — break completed before hour of work (5th-hour rule) <input id="mbMax" type="number" step="0.5" value="${c.mealBreakRules.maxHoursBeforeBreak||5}"></label>
     <label class="row" style="margin-top:8px;font-size:13px"><input type="checkbox" id="mbStagger" ${c.mealBreakRules.staggerBreaks!==false?"checked":""}> Stagger breaks — no two employees on meal break at the same time</label>
     <h3 style="margin-top:10px">Blackout hours (no breaks)</h3>
     <div id="blackoutList">${bo.map((b,i)=>`<div class="row" style="margin-bottom:6px"><input style="width:75px" id="bo_${i}_s" value="${b.start}"><span>→</span><input style="width:75px" id="bo_${i}_e" value="${b.end}"><input style="width:130px" id="bo_${i}_r" value="${b.reason}"><button class="btn small secondary" onclick="App.removeBlackout(${i})">✕</button></div>`).join("")}</div>
@@ -1532,6 +1738,8 @@ App.collectSettings=function(){
     const n=+v("sd_"+d+"_n"); if(n>0) c.specialDays[d]={extraEarlyStarters:n,reason:v("sd_"+d+"_r")||"Special"}; else delete c.specialDays[d]; }
   c.mealBreakRules.minShiftDuration=+v("mbMin"); c.mealBreakRules.breakDuration=+v("mbDur");
   c.mealBreakRules.maxHoursBeforeBreak=+v("mbMax")||5;
+  c.mealBreakRules.minHoursBeforeBreak=v("mbMin2")===""?1:+v("mbMin2");
+  c.mealBreakRules.prefHoursBeforeBreak=v("mbPref")===""?2:+v("mbPref");
   c.mealBreakRules.staggerBreaks=$("mbStagger").checked;
   c.mealBreakRules.blackoutHours=c.mealBreakRules.blackoutHours.map((b,i)=>({start:v("bo_"+i+"_s")||b.start,end:v("bo_"+i+"_e")||b.end,reason:v("bo_"+i+"_r")||b.reason}));
   c.busynessMultipliers={day:+v("bmDay"),night:+v("bmNight")};
